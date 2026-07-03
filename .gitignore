@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+.gradio*_deps/
+
+# Local app data and generated files
+data/cvs/
+data/reports/
+data/vector_db/
+uploads/
+vector_db/
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs and traces
+*.log
+*.trace
+*.out
+*.err
+
+# Tool caches
+.matplotlib_cache/
+.agents/
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
