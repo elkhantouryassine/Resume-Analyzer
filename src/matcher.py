@@ -3,6 +3,9 @@ from collections import Counter
 from functools import lru_cache
 
 
+EMBEDDING_MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+
+
 try:
     from sentence_transformers import SentenceTransformer, util
 except Exception:
@@ -15,7 +18,7 @@ def load_model():
     if SentenceTransformer is None:
         return None
     try:
-        return SentenceTransformer("all-MiniLM-L6-v2")
+        return SentenceTransformer(EMBEDDING_MODEL_NAME)
     except Exception:
         return None
 

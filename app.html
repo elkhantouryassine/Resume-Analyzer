@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Architeo Recruit - Dossier candidat</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700;9..144,900&family=IBM+Plex+Mono:wght@500;600;700&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="icon" href="/assets/tab-logo.jpeg" type="image/jpeg">
+  <link rel="stylesheet" href="styles.css?v=dark-rag-1">
+  <script src="script.js?v=dark-rag-1" defer></script>
+</head>
+<body class="app-started analysis-page">
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="brand" href="/" aria-label="Architeo Recruit">
+        <img class="brand-logo" src="/assets/architeo-recruite-logo.png" alt="" aria-hidden="true">
+        <span class="brand-text">Architeo Recruit</span>
+      </a>
+      <nav class="nav-tabs" aria-label="Navigation principale">
+        <button class="nav-tab is-active" type="button" data-target="analyse">Analyse</button>
+        <button class="nav-tab" type="button" data-target="resultats">Résultats</button>
+        <a class="nav-tab" href="/skills">Compétences</a>
+        <a class="nav-tab" href="/insights">Insights</a>
+        <a class="nav-tab" href="/diagnostic">Diagnostic</a>
+        <a class="nav-tab" href="/history">Historique</a>
+        <a class="nav-tab" href="/tracking">Suivi</a>
+        <a class="nav-tab" href="/report">Rapport</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="shell">
+    <section class="overview" id="analyse">
+      <div class="overview-copy">
+        <p class="eyebrow">Architeo</p>
+        <h1>Architeo <span class="overview-title-accent">Recruit</span></h1>
+        <p class="overview-text">Comparez un CV avec une offre, mesurez les écarts et générez un rapport prêt à présenter.</p>
+      </div>
+      <div class="overview-score" aria-label="Score final">
+        <span>Score global</span>
+        <strong id="heroScore">--%</strong>
+      </div>
+    </section>
+
+    <section class="workspace" aria-label="Formulaire d'analyse">
+      <article class="panel offer-panel">
+        <div class="panel-head">
+          <div>
+            <span class="section-kicker">Offre</span>
+            <h2>Poste ciblé</h2>
+          </div>
+          <button class="ghost-btn" id="sampleOfferBtn" type="button">Exemple</button>
+        </div>
+        <textarea id="offerInput" spellcheck="false" placeholder="Collez l'offre d'emploi ici..."></textarea>
+      </article>
+
+      <aside class="panel upload-panel">
+        <div>
+          <span class="section-kicker">CV candidat</span>
+          <h2>Document à analyser</h2>
+        </div>
+
+        <label class="upload-zone" id="uploadZone">
+          <input id="cvFile" type="file" accept=".pdf,.docx,.txt">
+          <span class="upload-icon" aria-hidden="true"></span>
+          <strong id="uploadTitle">Importer un CV</strong>
+          <small id="uploadHint">PDF, DOCX ou TXT</small>
+        </label>
+
+        <div class="settings-card">
+          <div class="control-group">
+            <label for="skillWeight">Poids compétences <span id="skillWeightValue">60%</span></label>
+            <input id="skillWeight" type="range" min="20" max="85" value="60" step="5">
+          </div>
+          <div class="control-group">
+            <label for="threshold">Seuil shortlist <span id="thresholdValue">70%</span></label>
+            <input id="threshold" type="range" min="40" max="90" value="70" step="5">
+          </div>
+        </div>
+
+        <button class="primary-btn" id="analyzeBtn" type="button">Analyser le CV</button>
+        <p class="status" id="statusBox">Aucun fichier chargé.</p>
+      </aside>
+    </section>
+
+    <section class="results-grid" id="resultats">
+      <article class="score-card">
+        <div class="score-ring" id="scoreRing">
+          <span id="scoreValue">--%</span>
+        </div>
+        <div class="score-content">
+          <p class="section-kicker">Décision</p>
+          <h2 id="verdictText">En attente</h2>
+          <p id="scoreCopy">Lancez une analyse pour afficher le score global.</p>
+        </div>
+      </article>
+      <article class="metric-card">
+        <span>Compétences</span>
+        <strong id="skillScore">--%</strong>
+      </article>
+      <article class="metric-card classification-card" id="classificationCard">
+        <span>Classification</span>
+        <strong id="classificationLabel">--</strong>
+        <small id="classificationDetail">En attente d'analyse.</small>
+      </article>
+      <article class="metric-card">
+        <span>Sémantique</span>
+        <strong id="semanticScore">--%</strong>
+      </article>
+      <article class="metric-card">
+        <span>Santé CV</span>
+        <strong id="healthScore">--%</strong>
+      </article>
+      <article class="metric-card">
+        <span>Score ATS</span>
+        <strong id="atsScore">--%</strong>
+      </article>
+      <article class="metric-card">
+        <span>Mots-clés</span>
+        <strong id="keywordScore">--%</strong>
+      </article>
+      <article class="metric-card">
+        <span>Mots détectés</span>
+        <strong id="wordCount">--</strong>
+      </article>
+    </section>
+
+    <section class="two-column" id="competences">
+      <article class="panel">
+        <div class="panel-head">
+          <div>
+            <span class="section-kicker">Correspondances</span>
+            <h2>Compétences validées</h2>
+          </div>
+          <span class="pill" id="matchedCount">0</span>
+        </div>
+        <div class="chip-list" id="matchedSkills"></div>
+      </article>
+      <article class="panel">
+        <div class="panel-head">
+          <div>
+            <span class="section-kicker">Écarts</span>
+            <h2>Compétences à renforcer</h2>
+          </div>
+          <span class="pill warn" id="missingCount">0</span>
+        </div>
+        <div class="chip-list" id="missingSkills"></div>
+      </article>
+    </section>
+
+    <section class="insights-grid" id="insights">
+      <article class="panel insight-card">
+        <div>
+          <span class="section-kicker">Profil</span>
+          <h2>Niveau estimé</h2>
+        </div>
+        <div class="profile-summary">
+          <strong id="profileLevel">--</strong>
+          <span id="profileYears">-- an(s)</span>
+          <p id="profileEvidence">L'estimation apparaîtra après analyse.</p>
+        </div>
+      </article>
+
+      <article class="panel insight-card profile-type-card">
+        <div class="panel-head">
+          <div>
+            <span class="section-kicker">Type détecté</span>
+            <h2>Orientation profil</h2>
+          </div>
+          <span class="pill" id="profileTypeScore">--%</span>
+        </div>
+        <div class="profile-summary">
+          <strong id="profileTypeLabel">--</strong>
+          <span id="profileTypeConfidence">Confiance --</span>
+          <p id="profileTypeSignals">L'orientation apparaîtra après analyse.</p>
+        </div>
+      </article>
+
+      <article class="panel insight-card">
+        <div class="panel-head">
+          <div>
+            <span class="section-kicker">Mots-clés</span>
+            <h2>Couverture de l'offre</h2>
+          </div>
+          <span class="pill" id="keywordCoverageLabel">--%</span>
+        </div>
+        <h3>Présents dans le CV</h3>
+        <div class="chip-list compact" id="keywordMatched"></div>
+        <h3 class="stack-title">À intégrer</h3>
+        <div class="chip-list compact" id="keywordMissing"></div>
+      </article>
+
+      <article class="panel insight-card">
+        <div>
+          <span class="section-kicker">Entretien</span>
+          <h2>Questions suggérées</h2>
+        </div>
+        <ol class="insight-list" id="interviewQuestions">
+          <li>Les questions apparaîtront après analyse.</li>
+        </ol>
+      </article>
+
+      <article class="panel insight-card">
+        <div>
+          <span class="section-kicker">Réécriture</span>
+          <h2>Améliorations prioritaires</h2>
+        </div>
+        <ul class="insight-list" id="rewriteSuggestions">
+          <li>Les recommandations apparaîtront après analyse.</li>
+        </ul>
+      </article>
+
+      <article class="panel insight-card ai-engine-card">
+        <div>
+          <span class="section-kicker">Transparence IA</span>
+          <h2>Moteurs utilisés</h2>
+        </div>
+        <div class="engine-list">
+          <div>
+            <span>Sémantique</span>
+            <strong id="semanticEngine">--</strong>
+          </div>
+          <div>
+            <span>Prédiction</span>
+            <strong id="classifierEngine">--</strong>
+          </div>
+          <div>
+            <span>Durée réelle</span>
+            <strong id="processingTime">-- ms</strong>
+          </div>
+        </div>
+      </article>
+    </section>
+
+    <section class="panel" id="diagnostic">
+      <div class="panel-head">
+        <div>
+          <span class="section-kicker">Diagnostic CV</span>
+          <h2>Structure et informations</h2>
+        </div>
+        <span class="pill" id="contactStatus">Coordonnées</span>
+      </div>
+      <div class="diagnostic-grid">
+        <div class="diagnostic-block">
+          <h3>Sections présentes</h3>
+          <div class="chip-list" id="sectionsFound"></div>
+        </div>
+        <div class="diagnostic-block">
+          <h3>Sections à renforcer</h3>
+          <div class="chip-list" id="sectionsMissing"></div>
+        </div>
+        <div class="diagnostic-block">
+          <h3>Coordonnées détectées</h3>
+          <ul class="contact-list" id="contactsList"></ul>
+        </div>
+        <div class="diagnostic-block">
+          <h3>Checklist ATS</h3>
+          <div class="check-list" id="atsChecks"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel report-panel" id="rapport">
+      <div class="panel-head report-head">
+        <div>
+          <span class="section-kicker">Rapport</span>
+          <h2>Présentation finale</h2>
+        </div>
+        <div class="actions">
+          <button class="ghost-btn" id="downloadMd" type="button" disabled>Markdown</button>
+          <button class="ghost-btn" id="downloadHtml" type="button" disabled>HTML</button>
+          <button class="ghost-btn" id="downloadTxt" type="button" disabled>Texte CV</button>
+        </div>
+      </div>
+      <div class="report-sheet" id="reportSheet">
+        <div class="report-empty">
+          <span>Rapport</span>
+          <h2>Rapport non généré</h2>
+          <p>L'analyse apparaîtra ici après l'import du CV.</p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <button class="chatbot-launcher" id="chatbotToggle" type="button" aria-label="Ouvrir le chatbot RAG" aria-expanded="false" aria-controls="chatbotPanel">
+    <img class="chatbot-logo" src="/assets/assistant-logo.svg" alt="" aria-hidden="true">
+    <span class="chatbot-pulse" aria-hidden="true"></span>
+  </button>
+
+  <aside class="chatbot-popover" id="chatbotPanel" aria-label="Chatbot RAG">
+    <div class="chatbot-header">
+      <div class="chatbot-title">
+        <img class="chatbot-header-logo" src="/assets/assistant-logo.svg" alt="" aria-hidden="true">
+        <div>
+          <span class="section-kicker">Assistant RAG</span>
+          <h2>Recherche multi-CV</h2>
+          <p class="chatbot-subtitle" id="ragMode">Base vectorielle prête</p>
+        </div>
+      </div>
+      <div class="chatbot-header-actions">
+        <span class="pill" id="ragCvCount">0 CV</span>
+        <button class="chatbot-close" id="chatbotClose" type="button" aria-label="Fermer le chatbot">×</button>
+      </div>
+    </div>
+
+    <div class="chatbot-body">
+      <section class="chatbot-upload rag-library-panel" aria-label="CV indexés">
+        <div class="rag-library" id="ragLibrary"></div>
+        <p class="status" id="ragStatus">Les CV analysés apparaissent ici.</p>
+      </section>
+
+      <section class="chatbot-conversation" aria-label="Conversation avec le chatbot">
+        <div class="rag-chat-head">
+          <div>
+            <span class="section-kicker">Conversation</span>
+            <strong>Assistant de recherche</strong>
+          </div>
+          <span class="rag-live-dot" aria-hidden="true"></span>
+        </div>
+        <div class="chat-box" id="ragMessages">
+          <div class="chat-message bot">
+            <strong>Assistant RAG</strong>
+            <p>Je peux rechercher dans les CV indexés et classer les meilleurs profils selon votre besoin.</p>
+          </div>
+        </div>
+
+        <div class="rag-question-row">
+          <textarea id="ragQuestion" rows="2" placeholder="Ex : candidats avec Python, SQL et Power BI"></textarea>
+          <button class="primary-btn" id="ragAskBtn" type="button">Envoyer</button>
+        </div>
+
+        <div class="rag-suggestions" id="ragSuggestions"></div>
+        <div class="rag-results" id="ragResults"></div>
+      </section>
+    </div>
+  </aside>
+</body>
+</html>

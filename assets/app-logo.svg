@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" role="img" aria-label="Architeo Recruit">
+  <rect x="8" y="8" width="80" height="80" rx="24" fill="#fff8f4"/>
+  <rect x="8.8" y="8.8" width="78.4" height="78.4" rx="23.2" fill="none" stroke="#f1d4c3" stroke-width="1.6"/>
+  <path d="M34 24h21.5L66 34.5V72H34V24Z" fill="none" stroke="#161f1a" stroke-width="4" stroke-linejoin="round"/>
+  <path d="M55.5 24v11.5H66" fill="none" stroke="#161f1a" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M42 47h13M42 56h10" stroke="#f26f2f" stroke-width="4" stroke-linecap="round"/>
+  <path d="M56 64l4 4 8-10" fill="none" stroke="#a9822d" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

@@ -4,16 +4,24 @@ import math
 import re
 import sqlite3
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 
 from src.cleaner import clean_text
 from src.skills import extract_skills
 
+try:
+    from sentence_transformers import SentenceTransformer
+except Exception:
+    SentenceTransformer = None
+
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 VECTOR_DIR = BASE_DIR / "data" / "vector_db"
 DB_PATH = VECTOR_DIR / "rag_vectors.sqlite"
-VECTOR_DIM = 512
+HASH_VECTOR_DIM = 512
+HASH_ENGINE = "hashing-v1"
+EMBEDDING_MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 
 STOPWORDS = {
     "avec", "dans", "pour", "plus", "nous", "vous", "votre", "notre", "cette",
@@ -60,11 +68,22 @@ def init_db(connection):
             chunk_index INTEGER NOT NULL,
             text TEXT NOT NULL,
             vector TEXT NOT NULL,
+            vector_engine TEXT NOT NULL DEFAULT 'hashing-v1',
+            vector_dim INTEGER NOT NULL DEFAULT 512,
             FOREIGN KEY(cv_id) REFERENCES cvs(id) ON DELETE CASCADE
         )
         """
     )
+    ensure_chunk_columns(connection)
     connection.commit()
+
+
+def ensure_chunk_columns(connection):
+    columns = {row["name"] for row in connection.execute("PRAGMA table_info(chunks)").fetchall()}
+    if "vector_engine" not in columns:
+        connection.execute("ALTER TABLE chunks ADD COLUMN vector_engine TEXT NOT NULL DEFAULT 'hashing-v1'")
+    if "vector_dim" not in columns:
+        connection.execute("ALTER TABLE chunks ADD COLUMN vector_dim INTEGER NOT NULL DEFAULT 512")
 
 
 def tokenize(text):
@@ -75,12 +94,43 @@ def tokenize(text):
 
 def stable_index(token):
     digest = hashlib.blake2b(token.encode("utf-8"), digest_size=4).digest()
-    return int.from_bytes(digest, "big") % VECTOR_DIM
+    return int.from_bytes(digest, "big") % HASH_VECTOR_DIM
 
 
-def embed_text(text):
+@lru_cache(maxsize=1)
+def load_embedding_model():
+    if SentenceTransformer is None:
+        return None
+    try:
+        return SentenceTransformer(EMBEDDING_MODEL_NAME)
+    except Exception:
+        return None
+
+
+def current_embedding_engine():
+    return EMBEDDING_MODEL_NAME if load_embedding_model() is not None else HASH_ENGINE
+
+
+def embedding_status():
+    model = load_embedding_model()
+    if model is not None:
+        return {
+            "engine": EMBEDDING_MODEL_NAME,
+            "model": EMBEDDING_MODEL_NAME,
+            "type": "sentence-transformers",
+            "neural": True,
+        }
+    return {
+        "engine": HASH_ENGINE,
+        "model": HASH_ENGINE,
+        "type": "hashing-local",
+        "neural": False,
+    }
+
+
+def hash_embed_text(text):
     tokens = tokenize(text)
-    vector = [0.0] * VECTOR_DIM
+    vector = [0.0] * HASH_VECTOR_DIM
 
     for token in tokens:
         vector[stable_index(token)] += 1.0
@@ -95,7 +145,17 @@ def embed_text(text):
     return [round(value / norm, 7) for value in vector]
 
 
+def embed_text(text):
+    model = load_embedding_model()
+    if model is not None:
+        vector = model.encode(text, normalize_embeddings=True)
+        return [round(float(value), 7) for value in vector]
+    return hash_embed_text(text)
+
+
 def cosine_similarity(left, right):
+    if len(left) != len(right):
+        return 0
     return sum(a * b for a, b in zip(left, right))
 
 
@@ -145,6 +205,7 @@ def add_cv_to_vector_db(cv_text, filename):
     skills = extract_skills(clean_text(text))
     contacts = extract_contacts(text)
     chunks = split_text(text)
+    vector_engine = current_embedding_engine()
     if not chunks:
         raise ValueError("Impossible de creer des segments RAG pour ce CV.")
 
@@ -173,22 +234,7 @@ def add_cv_to_vector_db(cv_text, filename):
             ),
         )
 
-        for index, chunk in enumerate(chunks):
-            chunk_id = f"{cv_id}_{index}"
-            connection.execute(
-                """
-                INSERT INTO chunks (id, cv_id, filename, chunk_index, text, vector)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    chunk_id,
-                    cv_id,
-                    filename,
-                    index,
-                    chunk,
-                    json.dumps(embed_text(chunk)),
-                ),
-            )
+        insert_cv_chunks(connection, cv_id, filename, text, chunks, vector_engine)
 
         connection.commit()
 
@@ -198,7 +244,60 @@ def add_cv_to_vector_db(cv_text, filename):
         "chunks": len(chunks),
         "skills": skills[:12],
         "wordCount": len(re.findall(r"\w+", text)),
+        "embeddingEngine": vector_engine,
     }
+
+
+def insert_cv_chunks(connection, cv_id, filename, text, chunks, vector_engine):
+    for index, chunk in enumerate(chunks):
+        chunk_id = f"{cv_id}_{index}"
+        vector = embed_text(chunk)
+        connection.execute(
+            """
+            INSERT INTO chunks (id, cv_id, filename, chunk_index, text, vector, vector_engine, vector_dim)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                chunk_id,
+                cv_id,
+                filename,
+                index,
+                chunk,
+                json.dumps(vector),
+                vector_engine,
+                len(vector),
+            ),
+        )
+
+
+def ensure_current_vector_engine(connection, vector_engine):
+    rows = connection.execute(
+        """
+        SELECT id, filename, text
+        FROM cvs
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM chunks
+            WHERE chunks.cv_id = cvs.id
+              AND chunks.vector_engine = ?
+        )
+        """,
+        (vector_engine,),
+    ).fetchall()
+
+    reindexed = 0
+    for row in rows:
+        chunks = split_text(row["text"])
+        if not chunks:
+            continue
+        connection.execute("DELETE FROM chunks WHERE cv_id = ?", (row["id"],))
+        insert_cv_chunks(connection, row["id"], row["filename"], row["text"], chunks, vector_engine)
+        reindexed += 1
+
+    if reindexed:
+        connection.commit()
+
+    return reindexed
 
 
 def list_indexed_cvs():
@@ -224,7 +323,7 @@ def list_indexed_cvs():
             }
         )
 
-    return {"count": len(cvs), "cvs": cvs}
+    return {"count": len(cvs), "cvs": cvs, "embedding": embedding_status()}
 
 
 def keywords_for_question(question, limit=10):
@@ -239,23 +338,30 @@ def search_cvs(question, top_k=5):
     if not query:
         return []
 
+    vector_engine = current_embedding_engine()
     query_vector = embed_text(query)
     query_skills = set(extract_skills(clean_text(query)))
     query_keywords = set(keywords_for_question(query, limit=14))
     by_cv = {}
 
     with get_connection() as connection:
+        ensure_current_vector_engine(connection, vector_engine)
         rows = connection.execute(
             """
             SELECT c.id AS cv_id, c.filename, c.skills, c.contacts, c.word_count,
-                   ch.text AS chunk_text, ch.vector
+                   ch.text AS chunk_text, ch.vector, ch.vector_engine, ch.vector_dim
             FROM chunks ch
             JOIN cvs c ON c.id = ch.cv_id
+            WHERE ch.vector_engine = ?
             """
+            ,
+            (vector_engine,),
         ).fetchall()
 
     for row in rows:
         chunk_vector = json.loads(row["vector"])
+        if row["vector_dim"] != len(query_vector):
+            continue
         base_score = cosine_similarity(query_vector, chunk_vector)
         skills = json.loads(row["skills"])
         skill_overlap = sorted(query_skills & set(skills))
@@ -306,7 +412,7 @@ def search_cvs(question, top_k=5):
 def reason_for_result(result, question):
     reasons = []
     if result["matchedSkills"]:
-        reasons.append("competences detectees : " + ", ".join(result["matchedSkills"][:5]))
+        reasons.append("compétences détectées : " + ", ".join(result["matchedSkills"][:5]))
     top_keywords = result["snippets"][0].get("keywordHits", []) if result["snippets"] else []
     if top_keywords:
         reasons.append("mots proches de la recherche : " + ", ".join(top_keywords[:5]))
@@ -333,13 +439,15 @@ def contact_summary(contacts):
         contacts.get("github", ""),
     ]
     visible = [value for value in values if value]
-    return " | ".join(visible) if visible else "coordonnees non detectees"
+    return " | ".join(visible) if visible else "coordonnées non détectées"
 
 
 def suggested_questions(results):
     suggestions = [
+        "Fais une shortlist de 3 candidats.",
+        "Compare les meilleurs candidats.",
+        "Qui manque de Docker ?",
         "Quels sont les 3 meilleurs profils pour ce besoin ?",
-        "Quels candidats ont les competences les plus proches ?",
     ]
     if results:
         skills = []
@@ -354,35 +462,218 @@ def suggested_questions(results):
     return suggestions[:3]
 
 
-def generate_chatbot_answer(question, top_k=5):
-    results = search_cvs(question, top_k=top_k)
-    library = list_indexed_cvs()
+def detect_hr_intent(question):
+    normalized = clean_text(question).lower()
+    if re.search(r"\b(compare|comparaison|difference|differences|versus|vs)\b", normalized):
+        return "compare"
+    if re.search(r"\b(shortlist|top\s*\d*|meilleurs?|classe|classement|rank|trie|selectionne)\b", normalized):
+        return "shortlist"
+    if re.search(r"\b(resume|résume|synthèse|synthèse|profil de|decris|décris|description)\b", normalized):
+        return "summary"
+    if re.search(r"\b(manque|manquent|missing|sans|n'a pas|ne possede pas|ne possède pas|lacune)\b", normalized):
+        return "missing_skill"
+    return "search"
 
-    if not library["count"]:
-        return {
-            "answer": "Aucun CV n'est encore indexe. Importez plusieurs CV dans la base RAG avant de poser une question.",
-            "results": [],
-            "indexedCount": 0,
-            "suggestions": [
-                "Ajoutez 3 a 10 CV puis demandez le meilleur profil pour un poste.",
-                "Vous pouvez chercher par competences, outils, diplome ou experience.",
-            ],
+
+def requested_limit(question, default=3, maximum=8):
+    normalized = clean_text(question).lower()
+    if re.search(r"\b(tous|toutes|chaque|all|each)\b", normalized):
+        return maximum
+    match = re.search(r"\b(\d{1,2})\b", question)
+    if not match:
+        return default
+    return max(1, min(int(match.group(1)), maximum))
+
+
+def load_cv_records(include_text=False):
+    selected_text = ", text" if include_text else ""
+    with get_connection() as connection:
+        rows = connection.execute(
+            f"""
+            SELECT id, filename, skills, contacts, word_count, created_at{selected_text}
+            FROM cvs
+            ORDER BY created_at DESC
+            """
+        ).fetchall()
+
+    records = []
+    for row in rows:
+        item = {
+            "id": row["id"],
+            "filename": row["filename"],
+            "skills": json.loads(row["skills"]),
+            "contacts": json.loads(row["contacts"]),
+            "wordCount": row["word_count"],
+            "createdAt": row["created_at"],
         }
+        if include_text:
+            item["text"] = row["text"]
+        records.append(item)
+    return records
 
-    if not results:
-        return {
-            "answer": (
-                "Je n'ai pas trouve de CV suffisamment proche de votre recherche. "
-                "Essayez d'ajouter des competences concretes, un intitule de poste ou des outils precis."
-            ),
-            "results": [],
-            "indexedCount": library["count"],
-            "suggestions": suggested_questions([]),
-        }
 
+def requested_skills(question):
+    skills = extract_skills(clean_text(question))
+    if skills:
+        return skills
+
+    tokens = keywords_for_question(question, limit=6)
+    ignored = {
+        "manque", "manquent", "missing", "sans", "candidat", "candidats",
+        "profil", "profils", "qui", "avec", "competence", "competences",
+    }
+    return [token for token in tokens if token not in ignored]
+
+
+def strongest_skills(candidate, limit=6):
+    return candidate.get("matchedSkills", [])[:limit] or candidate.get("skills", [])[:limit]
+
+
+def missing_requested_skills(candidate, question):
+    asked = requested_skills(question)
+    candidate_skills = set(candidate.get("skills", []))
+    return [skill for skill in asked if skill not in candidate_skills]
+
+
+def missing_known_skills(candidate, question):
+    asked = extract_skills(clean_text(question))
+    candidate_skills = set(candidate.get("skills", []))
+    return [skill for skill in asked if skill not in candidate_skills]
+
+
+def candidate_quality_score(record):
+    skills_count = len(record.get("skills", []))
+    contacts = record.get("contacts", {})
+    contact_score = sum(1 for value in contacts.values() if value) * 4
+    length_score = min(record.get("wordCount", 0) / 18, 25)
+    skills_score = min(skills_count * 1.35, 45)
+    return round(min(95, 20 + skills_score + length_score + contact_score), 2)
+
+
+def cv_records_as_results(limit=8):
+    records = load_cv_records()
+    results = []
+    for record in records:
+        score = candidate_quality_score(record)
+        skills = record.get("skills", [])
+        results.append(
+            {
+                **record,
+                "score": score,
+                "matchedSkills": skills[:8],
+                "snippets": [
+                    {
+                        "text": "Profil indexé dans la base CV. Classement RH basé sur la richesse du CV, les compétences détectées et les coordonnées disponibles.",
+                        "score": score,
+                        "keywordHits": skills[:6],
+                    }
+                ],
+                "confidenceLabel": confidence_label(score),
+            }
+        )
+    return sorted(results, key=lambda item: item["score"], reverse=True)[:limit]
+
+
+def summarize_candidate(candidate, question=""):
+    strengths = strongest_skills(candidate, limit=5)
+    missing = missing_known_skills(candidate, question) if question else []
+    parts = [
+        f"{candidate['filename']} : score {candidate.get('score', 0)}%",
+        "points forts " + (", ".join(strengths) if strengths else "non détectés"),
+    ]
+    if missing:
+        parts.append("a verifier/manquant " + ", ".join(missing[:4]))
+    parts.append("contact " + contact_summary(candidate.get("contacts", {})))
+    return "; ".join(parts) + "."
+
+
+def build_shortlist_answer(results, library_count, question):
+    limit = requested_limit(question, default=3)
+    shortlist = results[:limit]
+    lines = [
+        f"Shortlist RH : {len(shortlist)} candidat(s) retenu(s) parmi {library_count} CV indexé(s).",
+        "",
+    ]
+    for index, candidate in enumerate(shortlist, start=1):
+        lines.append(f"{index}. {summarize_candidate(candidate, question)}")
+    lines.append("")
+    lines.append("Conseil RH : commencez par le premier profil, puis utilisez les autres comme alternatives si le besoin exige plus de couverture technique.")
+    return "\n".join(lines)
+
+
+def build_comparison_answer(results, library_count, question):
+    compared = results[: min(4, len(results))]
+    lines = [
+        f"Comparaison RH des {len(compared)} meilleur(s) candidat(s) sur {library_count} CV.",
+        "",
+        "Candidat | Score | Forces | Points a verifier",
+    ]
+    for candidate in compared:
+        strengths = ", ".join(strongest_skills(candidate, limit=4)) or "non détectées"
+        missing = ", ".join(missing_known_skills(candidate, question)[:4]) or "selon entretien"
+        lines.append(f"{candidate['filename']} | {candidate.get('score', 0)}% | {strengths} | {missing}")
+    lines.append("")
+    lines.append("Lecture : le score combine similarité sémantique, compétences détectées et mots proches de la demande.")
+    return "\n".join(lines)
+
+
+def build_summary_answer(results, library_count, question):
+    summarized = results[: requested_limit(question, default=3)]
+    lines = [f"Resume RH de {len(summarized)} profil(s) parmi {library_count} CV.", ""]
+    for candidate in summarized:
+        lines.append("- " + summarize_candidate(candidate, question))
+    return "\n".join(lines)
+
+
+def build_missing_skill_answer(question, library_count):
+    asked = requested_skills(question)
+    if not asked:
+        return (
+            "Je peux vérifier les lacunes, mais il faut préciser une compétence. "
+            "Exemple : Qui manque de Docker ?"
+        ), []
+
+    records = load_cv_records()
+    missing_rows = []
+    matching_results = []
+    for record in records:
+        skills = set(record.get("skills", []))
+        missing = [skill for skill in asked if skill not in skills]
+        if missing:
+            missing_rows.append((record, missing))
+        else:
+            matching_results.append(
+                {
+                    **record,
+                    "score": 100,
+                    "matchedSkills": asked,
+                    "snippets": [{"text": "Toutes les compétences demandées sont détectées dans ce CV.", "score": 100, "keywordHits": asked}],
+                    "confidenceLabel": "Compétences demandées détectées",
+                }
+            )
+
+    lines = [
+        f"Verification des lacunes sur {library_count} CV pour : {', '.join(asked)}.",
+        "",
+    ]
+    if missing_rows:
+        lines.append("CV avec compétence(s) manquante(s) :")
+        for record, missing in missing_rows[:8]:
+            lines.append(f"- {record['filename']} : manque {', '.join(missing)}.")
+    else:
+        lines.append("Aucun manque détecté : tous les CV indexé(s) couvrent ces compétences.")
+
+    if matching_results:
+        lines.append("")
+        lines.append("CV qui couvrent la demande : " + ", ".join(result["filename"] for result in matching_results[:5]) + ".")
+
+    return "\n".join(lines), matching_results
+
+
+def build_search_answer(results, library_count, question):
     best = results[0]
     lines = [
-        f"J'ai trouve {len(results)} CV pertinent(s) parmi {library['count']} CV indexe(s).",
+        f"J'ai trouve {len(results)} CV pertinent(s) parmi {library_count} CV indexé(s).",
         f"Le meilleur profil est {best['filename']} ({best['score']}%, {best['confidenceLabel'].lower()}).",
         "",
         "Pourquoi : " + reason_for_result(best, question) + ".",
@@ -396,10 +687,72 @@ def generate_chatbot_answer(question, top_k=5):
         for position, result in enumerate(results[1:4], start=2):
             lines.append(f"{position}. {result['filename']} - {result['score']}% - {reason_for_result(result, question)}.")
 
+    return "\n".join(lines)
+
+
+def generate_chatbot_answer(question, top_k=5):
+    intent = detect_hr_intent(question)
+    search_limit = max(top_k, requested_limit(question, default=3, maximum=8))
+    results = search_cvs(question, top_k=search_limit)
+    library = list_indexed_cvs()
+    embedding = embedding_status()
+
+    if not library["count"]:
+        return {
+            "answer": "Aucun CV n'est encore indexé. Analysez un CV pour l'ajouter automatiquement à la base RAG avant de poser une question.",
+            "results": [],
+            "indexedCount": 0,
+            "embedding": embedding,
+            "assistantMode": intent,
+            "suggestions": [
+                "Analysez plusieurs CV puis demandez le meilleur profil pour un poste.",
+                "Vous pouvez chercher par compétences, outils, diplôme ou expérience.",
+            ],
+        }
+
+    if intent in {"shortlist", "compare", "summary"} and not results:
+        results = cv_records_as_results(limit=search_limit)
+
+    if intent == "missing_skill":
+        answer, missing_results = build_missing_skill_answer(question, library["count"])
+        return {
+            "answer": answer,
+            "results": missing_results,
+            "indexedCount": library["count"],
+            "embedding": embedding,
+            "assistantMode": intent,
+            "suggestions": suggested_questions(missing_results),
+            "mode": embedding["engine"],
+        }
+
+    if not results:
+        return {
+            "answer": (
+                "Je n'ai pas trouve de CV suffisamment proche de votre recherche. "
+                "Essayez d'ajouter des compétences concrètes, un intitulé de poste ou des outils précis."
+            ),
+            "results": [],
+            "indexedCount": library["count"],
+            "embedding": embedding,
+            "assistantMode": intent,
+            "suggestions": suggested_questions([]),
+        }
+
+    if intent == "shortlist":
+        answer = build_shortlist_answer(results, library["count"], question)
+    elif intent == "compare":
+        answer = build_comparison_answer(results, library["count"], question)
+    elif intent == "summary":
+        answer = build_summary_answer(results, library["count"], question)
+    else:
+        answer = build_search_answer(results, library["count"], question)
+
     return {
-        "answer": "\n".join(lines),
+        "answer": answer,
         "results": results,
         "indexedCount": library["count"],
+        "embedding": embedding,
+        "assistantMode": intent,
         "suggestions": suggested_questions(results),
-        "mode": "rag_sqlite_vectoriel_local",
+        "mode": embedding["engine"],
     }

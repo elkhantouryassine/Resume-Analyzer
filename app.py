@@ -1,9 +1,12 @@
 import json
 import os
 import re
+import sqlite3
 import sys
 import tempfile
 import time
+import unicodedata
+import uuid
 from collections import Counter
 from datetime import datetime
 from email.parser import BytesParser
@@ -11,8 +14,14 @@ from email.policy import default
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote
+from urllib.parse import parse_qs, unquote, urlsplit
 from src.rag_chatbot import add_cv_to_vector_db, generate_chatbot_answer, list_indexed_cvs
+from src.ai_report import generate_report
+from src.classifier import load_classifier, predict_candidate
+from src.cleaner import clean_text
+from src.extractor import extract_docx_text, extract_pdf_text
+from src.matcher import compare_skills, load_model, semantic_similarity
+from src.skills import extract_skills
 
 BASE_DIR = Path(__file__).resolve().parent
 LOCAL_SITE_PACKAGES = BASE_DIR / ".venv" / "Lib" / "site-packages"
@@ -27,22 +36,26 @@ def prefer_local_site_packages():
 
 prefer_local_site_packages()
 
-from src.ai_report import generate_report
-from src.classifier import load_classifier, predict_candidate
-from src.cleaner import clean_text
-from src.extractor import extract_docx_text, extract_pdf_text
-from src.matcher import compare_skills, load_model, semantic_similarity
-from src.skills import extract_skills
 
 
 UPLOAD_DIR = BASE_DIR / "data" / "cvs"
+HISTORY_DIR = BASE_DIR / "data" / "history"
+HISTORY_DB = HISTORY_DIR / "analysis_history.sqlite"
+
+TRACKING_STAGES = [
+    {"id": "selection", "label": "CV retenu"},
+    {"id": "rh", "label": "Entretien RH"},
+    {"id": "technical", "label": "Entretien technique"},
+    {"id": "procedure", "label": "Suite de procedure"},
+]
+TRACKING_STAGE_IDS = {stage["id"] for stage in TRACKING_STAGES}
 ALLOWED_EXTENSIONS = {".pdf", ".docx", ".txt"}
 
 SECTION_PATTERNS = {
     "Profil": r"\b(profil|summary|resume|objectif|a propos)\b",
     "Experience": r"\b(experience|experiences|work history|emploi|stage)\b",
-    "Formation": r"\b(formation|education|diplome|degree|universite)\b",
-    "Competences": r"\b(competences|skills|technologies|outils)\b",
+    "Formation": r"\b(formation|education|diplôme|degree|universite)\b",
+    "Compétences": r"\b(competences|skills|technologies|outils)\b",
     "Projets": r"\b(projets|projects|realisations)\b",
     "Langues": r"\b(langues|languages)\b",
 }
@@ -54,6 +67,96 @@ KEYWORD_STOPWORDS = {
     "bases", "plus", "and", "the", "for", "with", "from", "that", "this",
     "candidate", "role", "job", "work", "team", "teams", "skills", "skill",
 }
+
+PROFILE_TYPES = {
+    "Data Analyst": {
+        "skills": ["python", "sql", "pandas", "numpy", "excel", "power bi", "tableau", "matplotlib"],
+        "keywords": [
+            "data analyst", "analyse de donnees", "dashboard", "tableau de bord",
+            "reporting", "kpi", "visualisation", "statistique", "metier",
+        ],
+    },
+    "Data Scientist": {
+        "skills": ["python", "pandas", "numpy", "scikit learn", "machine learning", "deep learning", "nlp"],
+        "keywords": [
+            "data scientist", "modele", "prediction", "classification", "regression",
+            "intelligence artificielle", "feature engineering", "ml", "ia",
+        ],
+    },
+    "Developpeur BI": {
+        "skills": ["sql", "power bi", "tableau", "excel", "mysql", "postgresql", "oracle database"],
+        "keywords": [
+            "bi", "business intelligence", "etl", "data warehouse", "dwh",
+            "dax", "reporting", "cube", "decisionnel",
+        ],
+    },
+    "Developpeur Backend": {
+        "skills": ["python", "java", "php", "django", "laravel", "fastapi", "node.js", ".net", "sql", "postgresql", "mongodb"],
+        "keywords": [
+            "backend", "back end", "api", "rest", "microservice", "authentification",
+            "serveur", "endpoint", "architecture",
+        ],
+    },
+    "Developpeur Frontend": {
+        "skills": ["javascript", "typescript", "react", "bootstrap"],
+        "keywords": [
+            "frontend", "front end", "interface", "ui", "ux", "html", "css",
+            "responsive", "web app",
+        ],
+    },
+    "Developpeur Full Stack": {
+        "skills": ["javascript", "typescript", "react", "node.js", "django", "laravel", "fastapi", "sql", "mongodb"],
+        "keywords": [
+            "full stack", "fullstack", "frontend", "backend", "api", "application web",
+            "interface", "base de donnees",
+        ],
+    },
+    "Developpeur Mobile": {
+        "skills": ["react native", "java"],
+        "keywords": [
+            "mobile", "android", "ios", "flutter", "kotlin", "swift", "application mobile",
+        ],
+    },
+    "DevOps / Cloud": {
+        "skills": ["docker", "git", "github", "ci/cd"],
+        "keywords": [
+            "devops", "cloud", "kubernetes", "aws", "azure", "gcp", "linux",
+            "deploiement", "pipeline", "infrastructure",
+        ],
+    },
+    "Database / ETL": {
+        "skills": ["sql", "mysql", "sqlite", "oracle database", "postgresql", "mongodb", "merise"],
+        "keywords": [
+            "base de donnees", "database", "etl", "modelisation", "schema",
+            "requete", "data warehouse", "migration",
+        ],
+    },
+    "Ingenieur Logiciel": {
+        "skills": ["python", "java", "c++", "c#", "git", "uml", "agile", "scrum"],
+        "keywords": [
+            "software engineer", "ingenieur logiciel", "conception", "poo",
+            "architecture", "tests", "qualite", "maintenance",
+        ],
+    },
+}
+
+CV_DOCUMENT_TERMS = [
+    "curriculum vitae", "resume", "cv", "profil", "profile", "experience",
+    "experiences", "formation", "education", "competences", "skills",
+    "projets", "projects", "certifications", "certificats", "langues",
+    "languages", "stage", "internship", "mission", "missions", "emploi",
+    "work experience", "professional experience", "technologies", "outils",
+]
+
+NON_CV_DOCUMENT_TERMS = [
+    "facture", "invoice", "bon de commande", "purchase order", "devis",
+    "contrat de vente", "conditions generales", "proces verbal",
+    "compte rendu", "rapport annuel", "article scientifique", "abstract",
+    "chapitre", "table des matieres", "sommaire", "bibliographie",
+    "recu", "receipt", "attestation", "certificat medical", "syllabus",
+]
+
+MIN_CV_DOCUMENT_SCORE = 45
 
 
 def extract_contact_details(text):
@@ -120,6 +223,190 @@ def keyword_coverage(offer_text, cv_text):
     }
 
 
+def normalize_profile_text(text):
+    normalized = unicodedata.normalize("NFKD", (text or "").lower())
+    ascii_text = normalized.encode("ascii", "ignore").decode("ascii")
+    return re.sub(r"[^a-z0-9+#. ]+", " ", ascii_text)
+
+
+def unique_limited(items, limit=6):
+    unique_items = []
+    seen = set()
+    for item in items:
+        key = item.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_items.append(item)
+        if len(unique_items) >= limit:
+            break
+    return unique_items
+
+
+def has_normalized_phrase(normalized_text, phrase):
+    normalized_phrase = normalize_profile_text(phrase).strip()
+    return bool(normalized_phrase and normalized_phrase in normalized_text)
+
+
+def evaluate_cv_document(text, filename="", cv_skills=None, contacts=None, sections_found=None):
+    normalized_text = normalize_profile_text(text)
+    words = re.findall(r"\b[a-z0-9+#.]{2,}\b", normalized_text)
+    word_count = len(words)
+    contacts = contacts if contacts is not None else extract_contact_details(text)
+    sections_found = sections_found if sections_found is not None else detect_sections(text)[0]
+    cv_skills = cv_skills if cv_skills is not None else extract_skills(clean_text(text))
+    contact_count = sum(1 for value in contacts.values() if value)
+    skill_count = len(cv_skills)
+    score = 0
+    positive_signals = []
+
+    if word_count >= 80:
+        score += 12
+        positive_signals.append("Longueur compatible CV")
+    elif word_count >= 40:
+        score += 6
+        positive_signals.append("Texte court mais exploitable")
+
+    if contact_count:
+        score += 20
+        positive_signals.append("Coordonnées détectées")
+
+    if sections_found:
+        score += min(len(sections_found) * 10, 45)
+        positive_signals.extend([f"Section {section}" for section in sections_found[:4]])
+
+    if skill_count >= 6:
+        score += 25
+        positive_signals.append("Compétences techniques détectées")
+    elif skill_count >= 3:
+        score += 16
+        positive_signals.append("Plusieurs compétences détectées")
+    elif skill_count:
+        score += 6
+        positive_signals.append("Compétence détectée")
+
+    professional_hits = [
+        term for term in CV_DOCUMENT_TERMS
+        if has_normalized_phrase(normalized_text, term)
+    ]
+    score += min(len(professional_hits) * 3, 18)
+    positive_signals.extend(professional_hits[:5])
+
+    normalized_filename = normalize_profile_text(filename)
+    filename_denies_cv = re.search(r"\b(non|not|pas)\s+cv\b", normalized_filename)
+    if re.search(r"\b(cv|resume|curriculum)\b", normalized_filename) and not filename_denies_cv:
+        score += 8
+        positive_signals.append("Nom de fichier oriente CV")
+
+    negative_signals = [
+        term for term in NON_CV_DOCUMENT_TERMS
+        if has_normalized_phrase(normalized_text, term)
+    ]
+    score -= min(len(negative_signals) * 12, 36)
+
+    if word_count < 35:
+        score -= 18
+    if not sections_found and contact_count == 0 and skill_count < 2:
+        score -= 20
+
+    score = round(max(0, min(score, 100)), 2)
+    has_cv_structure = contact_count > 0 or len(sections_found) >= 2 or skill_count >= 3
+    is_cv = score >= MIN_CV_DOCUMENT_SCORE and has_cv_structure
+    if len(negative_signals) >= 3 and score < 70:
+        is_cv = False
+
+    return {
+        "isCv": is_cv,
+        "score": score,
+        "threshold": MIN_CV_DOCUMENT_SCORE,
+        "wordCount": word_count,
+        "sectionsFound": sections_found,
+        "contactCount": contact_count,
+        "skillCount": skill_count,
+        "positiveSignals": unique_limited(positive_signals, 8),
+        "negativeSignals": unique_limited(negative_signals, 6),
+    }
+
+
+def build_cv_rejection_message(document_check):
+    signals = document_check.get("positiveSignals", [])
+    signal_text = ", ".join(signals[:3]) if signals else "signaux CV insuffisants"
+    return (
+        "Document refuse : le fichier importe ne semble pas etre un CV "
+        f"(confiance {document_check.get('score', 0)}%). "
+        "Importez uniquement un CV contenant au minimum des coordonnées, "
+        "une expérience/formation et des compétences. "
+        f"Signaux détectés : {signal_text}."
+    )
+
+
+def detect_profile_type(cv_text, cv_skills, sections_found):
+    normalized_text = normalize_profile_text(cv_text)
+    skill_set = {skill.lower() for skill in cv_skills}
+    scored_profiles = []
+
+    for label, config in PROFILE_TYPES.items():
+        score = 0
+        signals = []
+
+        for skill in config["skills"]:
+            if skill.lower() in skill_set:
+                score += 10
+                signals.append(skill)
+
+        for keyword in config["keywords"]:
+            keyword_key = normalize_profile_text(keyword).strip()
+            if keyword_key and keyword_key in normalized_text:
+                score += 4
+                signals.append(keyword)
+
+        if "Projets" in sections_found:
+            score += 2
+        if "Experience" in sections_found:
+            score += 2
+
+        confidence_score = min(100, round(score * 2.4, 2))
+        scored_profiles.append(
+            {
+                "label": label,
+                "score": confidence_score,
+                "rawScore": score,
+                "signals": unique_limited(signals),
+            }
+        )
+
+    scored_profiles.sort(key=lambda item: item["rawScore"], reverse=True)
+    best = scored_profiles[0] if scored_profiles else {"rawScore": 0, "score": 0}
+
+    if best["rawScore"] <= 0:
+        return {
+            "label": "Profil generaliste",
+            "score": 0,
+            "confidence": "faible",
+            "signals": [],
+            "alternatives": [],
+        }
+
+    confidence = "elevee" if best["rawScore"] >= 35 else "moyenne" if best["rawScore"] >= 18 else "faible"
+    alternatives = [
+        {
+            "label": item["label"],
+            "score": item["score"],
+            "signals": item["signals"],
+        }
+        for item in scored_profiles[1:4]
+        if item["rawScore"] > 0
+    ]
+
+    return {
+        "label": best["label"],
+        "score": best["score"],
+        "confidence": confidence,
+        "signals": best["signals"],
+        "alternatives": alternatives,
+    }
+
+
 def estimate_experience(text):
     current_year = datetime.now().year
     normalized = clean_text(text).lower()
@@ -139,53 +426,64 @@ def estimate_experience(text):
     if detected_years >= 6:
         level = "Senior"
     elif detected_years >= 3:
-        level = "Intermediaire"
+        level = "Intermédiaire"
     elif detected_years >= 1:
         level = "Junior"
     else:
-        level = "Non detecte"
+        level = "Non détecté"
 
     evidence = (
-        f"{detected_years} an(s) d'experience estimee"
+        f"{detected_years} an(s) d'expérience estimée"
         if detected_years
-        else "Aucune duree explicite detectee dans le CV"
+        else "Aucune durée explicite détectée dans le CV"
     )
     return {"level": level, "years": detected_years, "evidence": evidence}
 
 
-def build_ats_checks(word_count, sections_found, contacts, skill_count, extension):
+def build_ats_checks(word_count, sections_found, contacts, skill_count, extension, document_check=None):
+    document_check = document_check or {}
     checks = [
         {
-            "label": "Coordonnees",
-            "status": "ok" if any(contacts.values()) else "warn",
-            "detail": "Email, telephone ou profil professionnel detecte."
-            if any(contacts.values())
-            else "Ajoutez au moins un email ou un telephone visible.",
-            "weight": 20,
+            "label": "Type de document",
+            "status": "ok" if document_check.get("isCv", True) else "warn",
+            "detail": (
+                f"CV reconnu avec {document_check.get('score', 100)}% de confiance."
+                if document_check.get("isCv", True)
+                else "Le fichier ne ressemble pas assez a un CV."
+            ),
+            "weight": 15,
         },
         {
-            "label": "Sections cles",
+            "label": "Coordonnées",
+            "status": "ok" if any(contacts.values()) else "warn",
+            "detail": "Email, téléphone ou profil professionnel détecté."
+            if any(contacts.values())
+            else "Ajoutez au moins un email ou un téléphone visible.",
+            "weight": 18,
+        },
+        {
+            "label": "Sections clés",
             "status": "ok" if len(sections_found) >= 4 else "warn",
-            "detail": f"{len(sections_found)} section(s) standard detectee(s).",
-            "weight": 25,
+            "detail": f"{len(sections_found)} section(s) standard détectée(s).",
+            "weight": 22,
         },
         {
             "label": "Longueur",
             "status": "ok" if 250 <= word_count <= 950 else "warn",
-            "detail": f"{word_count} mots detectes.",
-            "weight": 20,
+            "detail": f"{word_count} mots détectés.",
+            "weight": 18,
         },
         {
-            "label": "Competences",
+            "label": "Compétences",
             "status": "ok" if skill_count >= 6 else "warn",
-            "detail": f"{skill_count} competence(s) reconnue(s).",
-            "weight": 25,
+            "detail": f"{skill_count} compétence(s) reconnue(s).",
+            "weight": 20,
         },
         {
             "label": "Format",
             "status": "ok" if extension in ALLOWED_EXTENSIONS else "warn",
             "detail": f"Format {extension.upper()} compatible avec l'analyse.",
-            "weight": 10,
+            "weight": 7,
         },
     ]
     total = sum(item["weight"] for item in checks)
@@ -198,26 +496,26 @@ def build_ats_checks(word_count, sections_found, contacts, skill_count, extensio
 def build_interview_questions(missing_skills, matched_skills, offer_keywords):
     questions = []
     for skill in missing_skills[:3]:
-        questions.append(f"Pouvez-vous expliquer comment vous monteriez rapidement en competence sur {skill} ?")
+        questions.append(f"Pouvez-vous expliquer comment vous monteriez rapidement en compétence sur {skill} ?")
     for skill in matched_skills[:2]:
-        questions.append(f"Quel projet concret demontre votre niveau sur {skill} ?")
+        questions.append(f"Quel projet concret démontre votre niveau sur {skill} ?")
     if offer_keywords:
-        questions.append(f"Comment adapteriez-vous votre experience aux priorites suivantes : {', '.join(offer_keywords[:3])} ?")
-    questions.append("Quel resultat mesurable aimeriez-vous livrer pendant les 90 premiers jours ?")
+        questions.append(f"Comment adapteriez-vous votre expérience aux priorités suivantes : {', '.join(offer_keywords[:3])} ?")
+    questions.append("Quel résultat mesurable aimeriez-vous livrer pendant les 90 premiers jours ?")
     return questions[:6]
 
 
 def build_rewrite_suggestions(missing_skills, keyword_gap, sections_missing, contacts):
     suggestions = []
     if missing_skills:
-        suggestions.append("Ajouter une ligne Competences ciblee avec : " + ", ".join(missing_skills[:4]) + ".")
+        suggestions.append("Ajouter une ligne Compétences ciblée avec : " + ", ".join(missing_skills[:4]) + ".")
     if keyword_gap["missing"]:
-        suggestions.append("Reprendre naturellement ces mots-cles de l'offre : " + ", ".join(keyword_gap["missing"][:5]) + ".")
+        suggestions.append("Reprendre naturellement ces mots-clés de l'offre : " + ", ".join(keyword_gap["missing"][:5]) + ".")
     if sections_missing:
         suggestions.append("Ajouter ou renommer les sections manquantes : " + ", ".join(sections_missing[:3]) + ".")
     if not any(contacts.values()):
-        suggestions.append("Rendre les coordonnees visibles en haut du CV.")
-    suggestions.append("Transformer les missions principales en resultats chiffres quand c'est possible.")
+        suggestions.append("Rendre les coordonnées visibles en haut du CV.")
+    suggestions.append("Transformer les missions principales en résultats chiffrés quand c'est possible.")
     return suggestions[:5]
 
 
@@ -231,14 +529,69 @@ def verdict_for(score, threshold):
     return "Faible alignement"
 
 
+def probability_for_class(probability, classes, expected_class):
+    for index, class_value in enumerate(classes):
+        if str(class_value) == str(expected_class) and index < len(probability):
+            return float(probability[index])
+    fallback_index = int(expected_class) if str(expected_class).isdigit() else 0
+    if fallback_index < len(probability):
+        return float(probability[fallback_index])
+    return 0.0
+
+
+def classify_candidate(prediction, probability, classifier_details):
+    classes = classifier_details.get("classes") or [0, 1]
+    positive_probability = probability_for_class(probability, classes, 1)
+    negative_probability = probability_for_class(probability, classes, 0)
+    prediction_value = int(prediction)
+    is_positive = prediction_value == 1
+    confidence = positive_probability if is_positive else negative_probability
+    confidence_percent = round(max(0, min(confidence * 100, 100)), 2)
+    positive_percent = round(max(0, min(positive_probability * 100, 100)), 2)
+    negative_percent = round(max(0, min(negative_probability * 100, 100)), 2)
+
+    if is_positive:
+        label = "Bon profil"
+        tone = "good"
+        decision = "positive"
+    else:
+        label = "Profil faible"
+        tone = "bad"
+        decision = "negative"
+
+    if classifier_details.get("ready"):
+        detail = (
+            f"Décision binaire {decision} par Random Forest "
+            f"avec {confidence_percent}% de confiance."
+        )
+    else:
+        detail = (
+            "Modèle Random Forest indisponible, decision binaire produite par "
+            "un fallback local."
+        )
+
+    return {
+        "label": label,
+        "score": confidence_percent,
+        "tone": tone,
+        "detail": detail,
+        "prediction": prediction_value,
+        "positiveProbability": positive_percent,
+        "negativeProbability": negative_percent,
+        "model": classifier_details.get("model", "RandomForestClassifier"),
+        "engine": classifier_details.get("engine", "Random Forest"),
+        "classes": classes,
+    }
+
+
 def build_actions(missing_skills, missing_sections, final_score, semantic_score):
     actions = []
     if missing_skills:
-        actions.append("Ajouter ou clarifier ces competences : " + ", ".join(missing_skills[:5]) + ".")
+        actions.append("Ajouter ou clarifier ces compétences : " + ", ".join(missing_skills[:5]) + ".")
     if missing_sections:
         actions.append("Renforcer les sections : " + ", ".join(missing_sections[:3]) + ".")
     if semantic_score < 55:
-        actions.append("Adapter le vocabulaire du CV aux mots-cles de l'offre.")
+        actions.append("Adapter le vocabulaire du CV aux mots-clés de l'offre.")
     if final_score < 70:
         actions.append("Quantifier les realisations avec contexte, action et resultat.")
     actions.append("Ajouter un titre de CV aligne avec le poste vise.")
@@ -260,11 +613,23 @@ def analyze_resume(offer_text, file_path, original_name, skill_weight, threshold
     started_at = time.perf_counter()
     cv_text = extract_text(file_path)
     if not cv_text.strip():
-        raise ValueError("Aucun texte lisible detecte dans le CV.")
+        raise ValueError("Aucun texte lisible détecté dans le CV.")
 
     clean_cv = clean_text(cv_text)
     clean_offer = clean_text(offer_text)
     cv_skills = extract_skills(clean_cv)
+    contacts = extract_contact_details(cv_text)
+    sections_found, sections_missing = detect_sections(cv_text)
+    document_check = evaluate_cv_document(
+        cv_text,
+        original_name,
+        cv_skills=cv_skills,
+        contacts=contacts,
+        sections_found=sections_found,
+    )
+    if not document_check["isCv"]:
+        raise ValueError(build_cv_rejection_message(document_check))
+
     offer_skills = extract_skills(clean_offer)
     result = compare_skills(cv_skills, offer_skills)
     semantic_score = semantic_similarity(clean_cv[:6000], clean_offer[:6000])
@@ -275,14 +640,13 @@ def analyze_resume(offer_text, file_path, original_name, skill_weight, threshold
         2,
     )
 
-    prediction, probability = predict_candidate(
+    prediction, probability, classifier_details = predict_candidate(
         skill_score,
         semantic_score,
         len(result["matched_skills"]),
         len(result["missing_skills"]),
     )
-    contacts = extract_contact_details(cv_text)
-    sections_found, sections_missing = detect_sections(cv_text)
+    profile_type = detect_profile_type(cv_text, cv_skills, sections_found)
     word_count = len(re.findall(r"\w+", cv_text))
     health_score = compute_cv_health(word_count, sections_found, contacts, len(cv_skills))
     ats_score, ats_checks = build_ats_checks(
@@ -291,9 +655,11 @@ def analyze_resume(offer_text, file_path, original_name, skill_weight, threshold
         contacts,
         len(cv_skills),
         file_path.suffix.lower(),
+        document_check,
     )
     keyword_gap = keyword_coverage(offer_text, cv_text)
     experience = estimate_experience(cv_text)
+    classification = classify_candidate(prediction, probability, classifier_details)
     verdict = verdict_for(final_score, threshold)
     actions = build_actions(result["missing_skills"], sections_missing, final_score, semantic_score)
     interview_questions = build_interview_questions(
@@ -318,6 +684,9 @@ def analyze_resume(offer_text, file_path, original_name, skill_weight, threshold
         "contacts": contacts,
         "sections_found": sections_found,
         "sections_missing": sections_missing,
+        "profile_type": profile_type,
+        "document_check": document_check,
+        "classification": classification,
         "actions": actions,
         "ats_score": ats_score,
         "keyword_coverage": keyword_gap,
@@ -329,6 +698,7 @@ def analyze_resume(offer_text, file_path, original_name, skill_weight, threshold
     report = generate_report(result, semantic_score, final_score, insights)
     semantic_model = load_model()
     classifier_model = load_classifier()
+    classifier_ready = bool(classifier_details.get("ready")) and classifier_model is not None
     processing_time_ms = round((time.perf_counter() - started_at) * 1000)
     ai_engines = {
         "semantic": (
@@ -337,12 +707,12 @@ def analyze_resume(offer_text, file_path, original_name, skill_weight, threshold
             else "Fallback lexical rapide"
         ),
         "classifier": (
-            "Modele ML local RandomForest"
-            if classifier_model is not None
-            else "Regles de decision fallback"
+            "RandomForestClassifier local"
+            if classifier_ready
+            else "Fallback local sans modele Random Forest"
         ),
         "semanticReady": semantic_model is not None,
-        "classifierReady": classifier_model is not None,
+        "classifierReady": classifier_ready,
     }
 
     return {
@@ -359,6 +729,9 @@ def analyze_resume(offer_text, file_path, original_name, skill_weight, threshold
         "finalScore": final_score,
         "contacts": contacts,
         "sections": {"found": sections_found, "missing": sections_missing},
+        "profileType": profile_type,
+        "documentCheck": document_check,
+        "classification": classification,
         "wordCount": word_count,
         "healthScore": health_score,
         "atsScore": ats_score,
@@ -370,7 +743,8 @@ def analyze_resume(offer_text, file_path, original_name, skill_weight, threshold
         "verdict": verdict,
         "actions": actions,
         "prediction": int(prediction),
-        "probability": [float(probability[0]), float(probability[1])],
+        "probability": [float(value) for value in probability],
+        "classifierDetails": classifier_details,
         "aiEngines": ai_engines,
         "processingTimeMs": processing_time_ms,
         "report": report,
@@ -445,16 +819,315 @@ def collect_uploaded_files(files, *field_names):
     return collected
 
 
+def connect_history_db():
+    HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(HISTORY_DB)
+    connection.row_factory = sqlite3.Row
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS analyses (
+            id TEXT PRIMARY KEY,
+            created_at TEXT NOT NULL,
+            cv_filename TEXT NOT NULL,
+            profile_type TEXT NOT NULL,
+            verdict TEXT NOT NULL,
+            final_score REAL NOT NULL,
+            skill_score REAL NOT NULL,
+            semantic_score REAL NOT NULL,
+            ats_score REAL NOT NULL,
+            keyword_score REAL NOT NULL,
+            word_count INTEGER NOT NULL,
+            summary_json TEXT NOT NULL,
+            report_markdown TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS candidate_tracking (
+            analysis_id TEXT PRIMARY KEY,
+            stage TEXT NOT NULL DEFAULT 'selection',
+            notes TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(analysis_id) REFERENCES analyses(id) ON DELETE CASCADE
+        )
+        """
+    )
+    return connection
+
+
+def save_analysis_history(analysis):
+    history_id = f"{datetime.now().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:8]}"
+    created_at = datetime.now().isoformat(timespec="seconds")
+    profile_type = analysis.get("profileType") or {}
+    keyword_coverage_data = analysis.get("keywordCoverage") or {}
+    summary = {
+        "matchedSkills": analysis.get("matchedSkills", [])[:12],
+        "missingSkills": analysis.get("missingSkills", [])[:12],
+        "actions": analysis.get("actions", [])[:5],
+        "profileType": profile_type,
+        "documentCheck": analysis.get("documentCheck", {}),
+        "classification": analysis.get("classification", {}),
+        "prediction": analysis.get("prediction", 0),
+        "probability": analysis.get("probability", []),
+        "classifierDetails": analysis.get("classifierDetails", {}),
+        "experience": analysis.get("experience", {}),
+        "sections": analysis.get("sections", {}),
+        "keywordCoverage": keyword_coverage_data,
+        "contacts": analysis.get("contacts", {}),
+        "atsChecks": analysis.get("atsChecks", []),
+        "interviewQuestions": analysis.get("interviewQuestions", []),
+        "rewriteSuggestions": analysis.get("rewriteSuggestions", []),
+        "aiEngines": analysis.get("aiEngines", {}),
+        "processingTimeMs": analysis.get("processingTimeMs", 0),
+        "cvSkills": analysis.get("cvSkills", [])[:24],
+        "offerSkills": analysis.get("offerSkills", [])[:24],
+        "threshold": analysis.get("threshold", 70),
+        "skillWeight": analysis.get("skillWeight", 60),
+    }
+
+    connection = connect_history_db()
+    try:
+        connection.execute(
+            """
+            INSERT INTO analyses (
+                id, created_at, cv_filename, profile_type, verdict, final_score,
+                skill_score, semantic_score, ats_score, keyword_score, word_count,
+                summary_json, report_markdown
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                history_id,
+                created_at,
+                analysis.get("fileName", "CV analyse"),
+                profile_type.get("label", "Profil generaliste"),
+                analysis.get("verdict", "Analyse terminee"),
+                float(analysis.get("finalScore", 0)),
+                float(analysis.get("skillScore", 0)),
+                float(analysis.get("semanticScore", 0)),
+                float(analysis.get("atsScore", 0)),
+                float(keyword_coverage_data.get("score", 0)),
+                int(analysis.get("wordCount", 0)),
+                json.dumps(summary, ensure_ascii=False),
+                analysis.get("report", ""),
+            ),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    analysis["historyId"] = history_id
+    analysis["createdAt"] = created_at
+    return history_id
+
+
+def list_analysis_history(limit=30, include_report=False):
+    connection = connect_history_db()
+    try:
+        report_column = ", report_markdown" if include_report else ""
+        rows = connection.execute(
+            f"""
+            SELECT id, created_at, cv_filename, profile_type, verdict, final_score,
+                   skill_score, semantic_score, ats_score, keyword_score, word_count,
+                   summary_json{report_column}
+            FROM analyses
+            ORDER BY datetime(created_at) DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    finally:
+        connection.close()
+
+    items = []
+    for row in rows:
+        try:
+            summary = json.loads(row["summary_json"] or "{}")
+        except json.JSONDecodeError:
+            summary = {}
+        items.append(
+            {
+                "id": row["id"],
+                "createdAt": row["created_at"],
+                "fileName": row["cv_filename"],
+                "profileType": row["profile_type"],
+                "verdict": row["verdict"],
+                "finalScore": row["final_score"],
+                "skillScore": row["skill_score"],
+                "semanticScore": row["semantic_score"],
+                "atsScore": row["ats_score"],
+                "keywordScore": row["keyword_score"],
+                "wordCount": row["word_count"],
+                "summary": summary,
+            }
+        )
+        if include_report:
+            items[-1]["reportMarkdown"] = row["report_markdown"]
+    return items
+
+
+def get_latest_analysis():
+    items = list_analysis_history(limit=1, include_report=True)
+    return items[0] if items else None
+
+
+def normalize_tracking_stage(stage):
+    stage = str(stage or "selection").strip().lower()
+    return stage if stage in TRACKING_STAGE_IDS else "selection"
+
+
+def is_tracking_candidate(item):
+    summary = item.get("summary") or {}
+    classification = summary.get("classification") or {}
+    label = str(classification.get("label", "")).strip().lower()
+    if label == "bon profil":
+        return True
+
+    prediction = classification.get("prediction", summary.get("prediction"))
+    try:
+        if int(prediction) == 1:
+            return True
+    except (TypeError, ValueError):
+        pass
+
+    try:
+        final_score = float(item.get("finalScore", 0))
+        threshold = float(summary.get("threshold", 70))
+        return final_score >= threshold
+    except (TypeError, ValueError):
+        return False
+
+
+def fetch_tracking_rows(analysis_ids):
+    if not analysis_ids:
+        return {}
+
+    placeholders = ", ".join("?" for _ in analysis_ids)
+    connection = connect_history_db()
+    try:
+        rows = connection.execute(
+            f"""
+            SELECT analysis_id, stage, notes, updated_at
+            FROM candidate_tracking
+            WHERE analysis_id IN ({placeholders})
+            """,
+            analysis_ids,
+        ).fetchall()
+    finally:
+        connection.close()
+
+    return {
+        row["analysis_id"]: {
+            "stage": normalize_tracking_stage(row["stage"]),
+            "notes": row["notes"] or "",
+            "updatedAt": row["updated_at"],
+        }
+        for row in rows
+    }
+
+
+def list_candidate_tracking(limit=80):
+    history_items = [item for item in list_analysis_history(limit=limit) if is_tracking_candidate(item)]
+    tracking_rows = fetch_tracking_rows([item["id"] for item in history_items])
+    stage_counts = {stage["id"]: 0 for stage in TRACKING_STAGES}
+
+    items = []
+    for item in history_items:
+        tracking = tracking_rows.get(
+            item["id"],
+            {"stage": "selection", "notes": "", "updatedAt": item["createdAt"]},
+        )
+        tracking["stage"] = normalize_tracking_stage(tracking.get("stage"))
+        stage_counts[tracking["stage"]] = stage_counts.get(tracking["stage"], 0) + 1
+        item["tracking"] = tracking
+        items.append(item)
+
+    return {
+        "stages": TRACKING_STAGES,
+        "counts": stage_counts,
+        "items": items,
+    }
+
+
+def update_candidate_tracking(analysis_id, stage, notes):
+    analysis_id = str(analysis_id or "").strip()
+    if not analysis_id:
+        return None
+
+    connection = connect_history_db()
+    try:
+        row = connection.execute(
+            "SELECT id FROM analyses WHERE id = ?",
+            (analysis_id,),
+        ).fetchone()
+        if row is None:
+            return None
+
+        updated_at = datetime.now().isoformat(timespec="seconds")
+        connection.execute(
+            """
+            INSERT INTO candidate_tracking (analysis_id, stage, notes, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(analysis_id) DO UPDATE SET
+                stage = excluded.stage,
+                notes = excluded.notes,
+                updated_at = excluded.updated_at
+            """,
+            (analysis_id, normalize_tracking_stage(stage), str(notes or "")[:600], updated_at),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    return list_candidate_tracking()
+
+
 class ResumeAnalyzerHandler(BaseHTTPRequestHandler):
-    server_version = "ResumeAnalyzer/1.0"
+    server_version = "ArchiteoRecruit/1.0"
 
     def do_GET(self):
-        path = unquote(self.path.split("?", 1)[0])
+        parsed_url = urlsplit(self.path)
+        path = unquote(parsed_url.path)
+        query = parse_qs(parsed_url.query)
+        if path == "/api/history":
+            self.send_json({"items": list_analysis_history()})
+            return
+        if path == "/api/tracking":
+            self.send_json(list_candidate_tracking())
+            return
+        if path == "/api/analysis/latest":
+            self.send_json({"analysis": get_latest_analysis()})
+            return
         if path == "/api/rag/cvs":
             self.send_json(list_indexed_cvs())
             return
         if path in {"/", "/index.html"}:
             self.send_static_file(BASE_DIR / "index.html", "text/html; charset=utf-8")
+            return
+        if path in {"/app", "/app.html"}:
+            if query.get("start", ["0"])[0] != "1":
+                self.send_redirect("/")
+                return
+            self.send_static_file(BASE_DIR / "app.html", "text/html; charset=utf-8")
+            return
+        if path in {"/history", "/history.html"}:
+            self.send_static_file(BASE_DIR / "history.html", "text/html; charset=utf-8")
+            return
+        if path in {"/tracking", "/tracking.html"}:
+            self.send_static_file(BASE_DIR / "tracking.html", "text/html; charset=utf-8")
+            return
+        if path in {"/skills", "/skills.html"}:
+            self.send_static_file(BASE_DIR / "skills.html", "text/html; charset=utf-8")
+            return
+        if path in {"/insights", "/insights.html"}:
+            self.send_static_file(BASE_DIR / "insights.html", "text/html; charset=utf-8")
+            return
+        if path in {"/diagnostic", "/diagnostic.html"}:
+            self.send_static_file(BASE_DIR / "diagnostic.html", "text/html; charset=utf-8")
+            return
+        if path in {"/report", "/report.html"}:
+            self.send_static_file(BASE_DIR / "report.html", "text/html; charset=utf-8")
             return
         if path == "/styles.css":
             self.send_static_file(BASE_DIR / "styles.css", "text/css; charset=utf-8")
@@ -462,6 +1135,32 @@ class ResumeAnalyzerHandler(BaseHTTPRequestHandler):
         if path == "/script.js":
             self.send_static_file(BASE_DIR / "script.js", "application/javascript; charset=utf-8")
             return
+        if path == "/history.js":
+            self.send_static_file(BASE_DIR / "history.js", "application/javascript; charset=utf-8")
+            return
+        if path == "/tracking.js":
+            self.send_static_file(BASE_DIR / "tracking.js", "application/javascript; charset=utf-8")
+            return
+        if path == "/analysis-pages.js":
+            self.send_static_file(BASE_DIR / "analysis-pages.js", "application/javascript; charset=utf-8")
+            return
+        if path == "/rag-widget.js":
+            self.send_static_file(BASE_DIR / "rag-widget.js", "application/javascript; charset=utf-8")
+            return
+        if path.startswith("/assets/"):
+            asset_path = (BASE_DIR / path.lstrip("/")).resolve()
+            assets_root = (BASE_DIR / "assets").resolve()
+            asset_types = {
+                ".svg": "image/svg+xml; charset=utf-8",
+                ".jpg": "image/jpeg",
+                ".jpeg": "image/jpeg",
+                ".png": "image/png",
+                ".webp": "image/webp",
+            }
+            content_type = asset_types.get(asset_path.suffix.lower())
+            if assets_root in asset_path.parents and content_type:
+                self.send_static_file(asset_path, content_type)
+                return
         self.send_json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
 
     def do_POST(self):
@@ -474,6 +1173,9 @@ class ResumeAnalyzerHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/rag/chat":
             self.handle_rag_chat()
+            return
+        if path == "/api/tracking":
+            self.handle_tracking_update()
             return
         self.send_json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
 
@@ -489,6 +1191,12 @@ class ResumeAnalyzerHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(content)
+
+    def send_redirect(self, location):
+        self.send_response(HTTPStatus.FOUND)
+        self.send_header("Location", location)
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
 
     def send_json(self, payload, status=HTTPStatus.OK):
         content = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -533,7 +1241,28 @@ class ResumeAnalyzerHandler(BaseHTTPRequestHandler):
                 temp_file.write(uploaded["content"])
 
             try:
-                analysis = analyze_resume(offer_text, temp_path, original_name, skill_weight, threshold)
+                try:
+                    analysis = analyze_resume(offer_text, temp_path, original_name, skill_weight, threshold)
+                except ValueError as validation_exc:
+                    self.send_json({"error": str(validation_exc)}, HTTPStatus.BAD_REQUEST)
+                    return
+                try:
+                    indexed_cv = add_cv_to_vector_db(analysis["cvText"], original_name)
+                    analysis["ragIndex"] = {
+                        "indexed": True,
+                        "item": indexed_cv,
+                        "library": list_indexed_cvs(),
+                    }
+                except Exception as rag_exc:
+                    analysis["ragIndex"] = {
+                        "indexed": False,
+                        "error": str(rag_exc),
+                        "library": list_indexed_cvs(),
+                    }
+                try:
+                    save_analysis_history(analysis)
+                except Exception as history_exc:
+                    analysis["historyError"] = str(history_exc)
                 self.send_json(analysis)
             finally:
                 try:
@@ -574,6 +1303,16 @@ class ResumeAnalyzerHandler(BaseHTTPRequestHandler):
 
                 try:
                     cv_text = extract_text(temp_path)
+                    document_check = evaluate_cv_document(cv_text, original_name)
+                    if not document_check["isCv"]:
+                        errors.append(
+                            {
+                                "filename": original_name,
+                                "error": build_cv_rejection_message(document_check),
+                                "documentCheck": document_check,
+                            }
+                        )
+                        continue
                     indexed.append(add_cv_to_vector_db(cv_text, original_name))
                 except Exception as exc:
                     errors.append({"filename": original_name, "error": str(exc)})
@@ -615,6 +1354,34 @@ class ResumeAnalyzerHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             self.send_json({"error": f"Chatbot RAG indisponible : {exc}"}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
+    def handle_tracking_update(self):
+        content_length = parse_int(self.headers.get("Content-Length"), 0)
+        if content_length <= 0:
+            self.send_json({"error": "Requete vide."}, HTTPStatus.BAD_REQUEST)
+            return
+
+        try:
+            body = self.rfile.read(content_length)
+            payload = json.loads(body.decode("utf-8"))
+            analysis_id = payload.get("analysisId") or payload.get("id")
+            stage = str(payload.get("stage", "")).strip().lower()
+            notes = str(payload.get("notes", "")).strip()
+
+            if stage not in TRACKING_STAGE_IDS:
+                self.send_json({"error": "Etape de suivi invalide."}, HTTPStatus.BAD_REQUEST)
+                return
+
+            tracking = update_candidate_tracking(analysis_id, stage, notes)
+            if tracking is None:
+                self.send_json({"error": "Analyse introuvable."}, HTTPStatus.NOT_FOUND)
+                return
+
+            self.send_json(tracking)
+        except json.JSONDecodeError:
+            self.send_json({"error": "JSON invalide."}, HTTPStatus.BAD_REQUEST)
+        except Exception as exc:
+            self.send_json({"error": f"Suivi indisponible : {exc}"}, HTTPStatus.INTERNAL_SERVER_ERROR)
+
     def log_message(self, format, *args):
         print(f"{self.address_string()} - {format % args}")
 
@@ -622,7 +1389,7 @@ class ResumeAnalyzerHandler(BaseHTTPRequestHandler):
 def run_server():
     port = int(os.environ.get("PORT", 8502))
     server = ThreadingHTTPServer(("127.0.0.1", port), ResumeAnalyzerHandler)
-    print(" * Serving Resume Analyzer Pro")
+    print(" * Serving Architeo Recruit")
     print(f" * Running on http://127.0.0.1:{port}")
     print("Press CTRL+C to quit")
     try:

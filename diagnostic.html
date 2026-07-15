@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Architeo Recruit - Diagnostic</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700;9..144,900&family=IBM+Plex+Mono:wght@500;600;700&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="icon" href="/assets/tab-logo.jpeg" type="image/jpeg">
+  <link rel="stylesheet" href="styles.css?v=dark-rag-1">
+  <script src="analysis-pages.js?v=pages-1" defer></script>
+  <script src="rag-widget.js?v=dark-rag-1" defer></script>
+</head>
+<body class="app-started result-page" data-page="diagnostic">
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="brand" href="/" aria-label="Architeo Recruit">
+        <img class="brand-logo" src="/assets/architeo-recruite-logo.png" alt="" aria-hidden="true">
+        <span class="brand-text">Architeo Recruit</span>
+      </a>
+      <nav class="nav-tabs" aria-label="Navigation principale">
+        <a class="nav-tab" href="/app?start=1#analyse">Analyse</a>
+        <a class="nav-tab" href="/app?start=1#resultats">Résultats</a>
+        <a class="nav-tab" href="/skills">Compétences</a>
+        <a class="nav-tab" href="/insights">Insights</a>
+        <a class="nav-tab is-active" href="/diagnostic">Diagnostic</a>
+        <a class="nav-tab" href="/history">Historique</a>
+        <a class="nav-tab" href="/tracking">Suivi</a>
+        <a class="nav-tab" href="/report">Rapport</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="shell">
+    <section class="overview page-hero">
+      <div class="overview-copy">
+        <p class="eyebrow">Qualité CV</p>
+        <h1>Diagnostic</h1>
+        <p class="overview-text">Contrôlez la structure du CV, les coordonnées, les sections présentes et la checklist ATS.</p>
+      </div>
+      <div class="overview-score" aria-label="Score ATS">
+        <span>ATS</span>
+        <strong id="pageMetric">--%</strong>
+      </div>
+    </section>
+
+    <section id="pageContent">
+      <div class="panel">
+        <div class="history-empty">
+          <strong>Chargement du diagnostic</strong>
+          <p>Les resultats vont apparaître ici après la lecture de la dernière analyse.</p>
+        </div>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

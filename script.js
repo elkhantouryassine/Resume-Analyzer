@@ -9,6 +9,12 @@ Compétences attendues :
 - Bonnes bases en communication, documentation et présentation des résultats
 - Docker ou FastAPI est un plus`;
 
+const DEFAULT_RAG_SUGGESTIONS = [
+  "Trouve le meilleur profil Python SQL Power BI",
+  "Compare les candidats les plus proches du poste",
+  "Quels CV manquent de machine learning ?"
+];
+
 const els = {
   offerInput: document.querySelector("#offerInput"),
   cvFile: document.querySelector("#cvFile"),
@@ -28,6 +34,9 @@ const els = {
   verdictText: document.querySelector("#verdictText"),
   scoreCopy: document.querySelector("#scoreCopy"),
   skillScore: document.querySelector("#skillScore"),
+  classificationCard: document.querySelector("#classificationCard"),
+  classificationLabel: document.querySelector("#classificationLabel"),
+  classificationDetail: document.querySelector("#classificationDetail"),
   semanticScore: document.querySelector("#semanticScore"),
   healthScore: document.querySelector("#healthScore"),
   atsScore: document.querySelector("#atsScore"),
@@ -40,6 +49,10 @@ const els = {
   profileLevel: document.querySelector("#profileLevel"),
   profileYears: document.querySelector("#profileYears"),
   profileEvidence: document.querySelector("#profileEvidence"),
+  profileTypeLabel: document.querySelector("#profileTypeLabel"),
+  profileTypeScore: document.querySelector("#profileTypeScore"),
+  profileTypeConfidence: document.querySelector("#profileTypeConfidence"),
+  profileTypeSignals: document.querySelector("#profileTypeSignals"),
   keywordCoverageLabel: document.querySelector("#keywordCoverageLabel"),
   keywordMatched: document.querySelector("#keywordMatched"),
   keywordMissing: document.querySelector("#keywordMissing"),
@@ -57,12 +70,8 @@ const els = {
   downloadMd: document.querySelector("#downloadMd"),
   downloadHtml: document.querySelector("#downloadHtml"),
   downloadTxt: document.querySelector("#downloadTxt"),
-  ragFiles: document.querySelector("#ragFiles"),
-  ragUploadZone: document.querySelector("#ragUploadZone"),
-  ragUploadTitle: document.querySelector("#ragUploadTitle"),
-  ragUploadHint: document.querySelector("#ragUploadHint"),
-  ragIndexBtn: document.querySelector("#ragIndexBtn"),
   ragStatus: document.querySelector("#ragStatus"),
+  ragMode: document.querySelector("#ragMode"),
   ragCvCount: document.querySelector("#ragCvCount"),
   ragLibrary: document.querySelector("#ragLibrary"),
   ragQuestion: document.querySelector("#ragQuestion"),
@@ -77,10 +86,26 @@ const els = {
 
 let uploadedFile = null;
 let lastAnalysis = null;
-let ragSelectedFiles = [];
+let ragIndexedCount = 0;
 
-document.querySelectorAll(".nav-tab").forEach((button) => {
+function updateAppStarted() {
+  const welcome = document.querySelector("#accueil");
+  const hasStartedHash = window.location.hash && window.location.hash !== "#accueil";
+  const passedWelcome = welcome ? window.scrollY > welcome.offsetHeight * 0.45 : true;
+  document.body.classList.toggle("app-started", hasStartedHash || passedWelcome);
+}
+
+document.querySelector(".welcome-start")?.addEventListener("click", () => {
+  document.body.classList.add("app-started");
+});
+
+window.addEventListener("scroll", updateAppStarted, { passive: true });
+window.addEventListener("hashchange", updateAppStarted);
+updateAppStarted();
+
+document.querySelectorAll(".nav-tab[data-target]").forEach((button) => {
   button.addEventListener("click", () => {
+    document.body.classList.add("app-started");
     document.querySelectorAll(".nav-tab").forEach((tab) => tab.classList.remove("is-active"));
     button.classList.add("is-active");
     document.querySelector(`#${button.dataset.target}`).scrollIntoView({ behavior: "smooth", block: "start" });
@@ -160,35 +185,6 @@ els.downloadTxt.addEventListener("click", () => {
   if (lastAnalysis) downloadFile("cv-extrait.txt", lastAnalysis.cvText, "text/plain");
 });
 
-els.ragFiles.addEventListener("change", () => {
-  setRagFiles(Array.from(els.ragFiles.files || []));
-});
-
-["dragenter", "dragover"].forEach((eventName) => {
-  els.ragUploadZone.addEventListener(eventName, (event) => {
-    event.preventDefault();
-    els.ragUploadZone.classList.add("is-dragging");
-  });
-});
-
-["dragleave", "drop"].forEach((eventName) => {
-  els.ragUploadZone.addEventListener(eventName, (event) => {
-    event.preventDefault();
-    els.ragUploadZone.classList.remove("is-dragging");
-  });
-});
-
-els.ragUploadZone.addEventListener("drop", (event) => {
-  const files = Array.from(event.dataTransfer.files || []);
-  if (files.length) {
-    setRagFiles(files);
-  }
-});
-
-els.ragIndexBtn.addEventListener("click", async () => {
-  await indexRagFiles();
-});
-
 els.ragAskBtn.addEventListener("click", async () => {
   await askRagBot();
 });
@@ -220,70 +216,26 @@ function setUploadedFile(file) {
   setStatus("Fichier prêt pour analyse.", "ok");
 }
 
-function setRagFiles(files) {
-  ragSelectedFiles = files.filter((file) => /\.(pdf|docx|txt)$/i.test(file.name));
-  if (!ragSelectedFiles.length) {
-    els.ragUploadTitle.textContent = "Importer des CV";
-    els.ragUploadHint.textContent = "Formats acceptes : PDF, DOCX ou TXT";
-    setRagStatus("Aucun fichier compatible selectionne.", "error");
-    return;
-  }
-
-  els.ragUploadTitle.textContent = `${ragSelectedFiles.length} CV selectionne(s)`;
-  els.ragUploadHint.textContent = ragSelectedFiles.map((file) => file.name).slice(0, 3).join(", ");
-  setRagStatus("CV prets pour indexation vectorielle.", "ok");
-}
-
-async function indexRagFiles() {
-  if (!ragSelectedFiles.length) {
-    setRagStatus("Selectionnez plusieurs CV avant d'indexer.", "error");
-    return;
-  }
-
-  try {
-    setRagStatus("Indexation RAG en cours...", "");
-    els.ragIndexBtn.disabled = true;
-    const formData = new FormData();
-    ragSelectedFiles.forEach((file) => {
-      formData.append("cv_files", file);
-    });
-
-    const response = await fetch("/api/rag/upload", {
-      method: "POST",
-      body: formData
-    });
-    const payload = await readJson(response);
-    if (!response.ok) {
-      const details = asArray(payload.errors).map((item) => `${item.filename}: ${item.error}`).join(" | ");
-      throw new Error(payload.error || details || "Indexation impossible.");
-    }
-
-    renderRagLibrary(payload.library);
-    const indexedCount = payload.indexed ? payload.indexed.length : 0;
-    const errorCount = payload.errors ? payload.errors.length : 0;
-    setRagStatus(`${indexedCount} CV indexe(s) dans la base vectorielle${errorCount ? `, ${errorCount} erreur(s)` : ""}.`, "ok");
-    ragSelectedFiles = [];
-    els.ragFiles.value = "";
-    els.ragUploadTitle.textContent = "Ajouter des CV";
-    els.ragUploadHint.textContent = "PDF, DOCX ou TXT";
-  } catch (error) {
-    setRagStatus(error.message || "Indexation impossible.", "error");
-  } finally {
-    els.ragIndexBtn.disabled = false;
-  }
-}
-
 async function askRagBot() {
   const question = els.ragQuestion.value.trim();
   if (!question) {
     setRagStatus("Posez une question avant d'interroger le chatbot.", "error");
+    els.ragQuestion.focus();
+    return;
+  }
+  if (!ragIndexedCount) {
+    const message = "Aucun CV n'est encore indexé. Analysez un CV depuis la page Analyse pour l'ajouter à la base RAG.";
+    appendChatMessage("bot", "Assistant RAG", message);
+    setRagStatus(message, "error");
     return;
   }
 
   try {
     appendChatMessage("user", "Vous", question);
-    appendChatMessage("bot", "Assistant RAG", "Recherche dans la base vectorielle...");
+    appendChatMessage("bot is-loading", "Assistant RAG", "Recherche dans la base vectorielle...");
     els.ragQuestion.value = "";
+    setRagMode("Recherche en cours...");
+    els.chatbotPanel.classList.add("is-busy");
     els.ragAskBtn.disabled = true;
 
     const response = await fetch("/api/rag/chat", {
@@ -300,14 +252,17 @@ async function askRagBot() {
     renderRagResults(payload.results || []);
     renderRagSuggestions(payload.suggestions || []);
     if (typeof payload.indexedCount === "number") {
+      ragIndexedCount = payload.indexedCount;
       els.ragCvCount.textContent = `${payload.indexedCount} CV`;
     }
-    setRagStatus(payload.indexedCount ? "Recherche terminee." : "Importez des CV pour activer la recherche.", payload.indexedCount ? "ok" : "");
+    setRagStatus(payload.indexedCount ? `Recherche terminée. ${formatEmbeddingEngine(payload.embedding)}` : "Analysez un CV pour activer la recherche.", payload.indexedCount ? "ok" : "");
   } catch (error) {
     replaceLastBotMessage(error.message || "Chatbot RAG indisponible.");
     setRagStatus(error.message || "Chatbot RAG indisponible.", "error");
   } finally {
     els.ragAskBtn.disabled = false;
+    els.chatbotPanel.classList.remove("is-busy");
+    setRagMode(ragIndexedCount ? "Recherche prête" : "Analysez un CV");
   }
 }
 
@@ -323,24 +278,41 @@ async function loadRagLibrary() {
 
 function renderRagLibrary(library) {
   const cvs = library && Array.isArray(library.cvs) ? library.cvs : [];
+  ragIndexedCount = cvs.length;
   els.ragCvCount.textContent = `${cvs.length} CV`;
   els.ragLibrary.innerHTML = "";
+  setRagMode(cvs.length ? "Recherche prête" : "Analysez un CV");
 
   if (!cvs.length) {
-    els.ragLibrary.innerHTML = `<p class="empty-note">Aucun CV indexe dans la base vectorielle.</p>`;
+    els.ragLibrary.innerHTML = `
+      <div class="rag-empty-state">
+        <strong>Base vide</strong>
+        <p>Analysez un CV pour l'ajouter à la base vectorielle.</p>
+      </div>
+    `;
+    renderRagSuggestions(DEFAULT_RAG_SUGGESTIONS);
     return;
   }
 
   cvs.slice(0, 6).forEach((cv) => {
     const card = document.createElement("div");
     card.className = "rag-library-item";
+    const skills = Array.isArray(cv.skills) ? cv.skills : String(cv.skills || "").split(/\s+/).filter(Boolean);
     card.innerHTML = `
       <strong>${escapeHtml(cv.filename)}</strong>
       <span>${cv.wordCount || 0} mots</span>
-      <p>${escapeHtml((cv.skills || []).slice(0, 5).join(", ") || "Competences non detectees")}</p>
+      <p>${escapeHtml(skills.slice(0, 5).join(", ") || "Compétences non détectées")}</p>
     `;
     els.ragLibrary.appendChild(card);
   });
+  if (cvs.length > 6) {
+    const more = document.createElement("p");
+    more.className = "empty-note";
+    more.textContent = `+ ${cvs.length - 6} autre(s) CV indexé(s)`;
+    els.ragLibrary.appendChild(more);
+  }
+  renderRagSuggestions(DEFAULT_RAG_SUGGESTIONS);
+  setRagStatus(`${cvs.length} CV indexé(s). ${formatEmbeddingEngine(library && library.embedding)}`, (library && library.embedding && library.embedding.neural) ? "ok" : "");
 }
 
 function appendChatMessage(type, author, text) {
@@ -363,16 +335,22 @@ function replaceLastBotMessage(text) {
   }
   const paragraph = last.querySelector("p");
   paragraph.innerHTML = escapeHtml(text).replace(/\n/g, "<br>");
+  last.classList.remove("is-loading");
 }
 
 function renderRagResults(results) {
   els.ragResults.innerHTML = "";
   if (!results.length) {
-    els.ragResults.innerHTML = `<p class="empty-note">Aucun CV correspondant trouve.</p>`;
+    els.ragResults.innerHTML = `
+      <div class="rag-empty-state">
+        <strong>Aucune correspondance</strong>
+        <p>Essayez une recherche avec un poste, des outils ou des compétences plus précises.</p>
+      </div>
+    `;
     return;
   }
 
-  results.forEach((result) => {
+  results.forEach((result, index) => {
     const card = document.createElement("article");
     card.className = "rag-result-card";
     const snippet = result.snippets && result.snippets.length ? result.snippets[0].text : "";
@@ -383,12 +361,13 @@ function renderRagResults(results) {
     card.innerHTML = `
       <div class="rag-result-head">
         <div>
-          <strong>${escapeHtml(result.filename)}</strong>
-          <span>${escapeHtml(contactLine || "Coordonnees non detectees")}</span>
+          <strong><span class="rag-rank">#${index + 1}</span>${escapeHtml(result.filename)}</strong>
+          <span>${escapeHtml(contactLine || "Coordonnées non détectées")}</span>
           <span class="rag-confidence">${escapeHtml(result.confidenceLabel || "Correspondance estimee")}</span>
         </div>
         <em>${toNumber(result.score).toFixed(1)}%</em>
       </div>
+      <div class="rag-score-bar" style="--score: ${Math.max(0, Math.min(toNumber(result.score), 100))}%"></div>
       <div class="chip-list compact">
         ${chips.slice(0, 8).map((skill) => `<span class="chip good">${escapeHtml(skill)}</span>`).join("") || `<span class="chip">Similarite texte</span>`}
       </div>
@@ -400,7 +379,8 @@ function renderRagResults(results) {
 
 function renderRagSuggestions(suggestions) {
   els.ragSuggestions.innerHTML = "";
-  asArray(suggestions).slice(0, 3).forEach((suggestion) => {
+  const values = asArray(suggestions).length ? asArray(suggestions) : DEFAULT_RAG_SUGGESTIONS;
+  values.slice(0, 4).forEach((suggestion) => {
     const button = document.createElement("button");
     button.type = "button";
     button.dataset.question = suggestion;
@@ -440,7 +420,17 @@ async function analyze() {
     const analysis = normalizeAnalysis(payload);
     lastAnalysis = analysis;
     renderAnalysis(analysis);
-    setStatus(`Analyse terminée pour ${uploadedFile.name}.`, "ok");
+    if (payload.ragIndex && payload.ragIndex.indexed) {
+      renderRagLibrary(payload.ragIndex.library);
+      setRagStatus(`${payload.ragIndex.library.count} CV indexé(s). ${formatEmbeddingEngine(payload.ragIndex.library.embedding)}`, "ok");
+      appendChatMessage("bot", "Assistant RAG", `${uploadedFile.name} a été ajouté dans la base vectorielle.`);
+      setStatus(`Analyse terminée pour ${uploadedFile.name}. CV ajouté dans la base RAG.`, "ok");
+    } else if (payload.ragIndex && payload.ragIndex.error) {
+      setRagStatus(`Ajout RAG non effectué : ${payload.ragIndex.error}`, "error");
+      setStatus(`Analyse terminée pour ${uploadedFile.name}, mais l'indexation RAG a échoué.`, "ok");
+    } else {
+      setStatus(`Analyse terminée pour ${uploadedFile.name}.`, "ok");
+    }
   } catch (error) {
     setStatus(error.message || "Analyse impossible.", "error");
   }
@@ -455,8 +445,15 @@ function normalizeAnalysis(payload) {
   const contacts = payload.contacts || {};
   const keywordCoverage = payload.keywordCoverage || buildKeywordCoverage(matchedSkills, missingSkills, offerSkills);
   const actions = asArray(payload.actions);
+  const profileType = payload.profileType || {};
+  const classification = payload.classification || buildFallbackClassification(payload, keywordCoverage);
+  const classificationPrediction = toNumber(classification.prediction, toNumber(payload.prediction));
+  const isPositiveClassification = classification.label === "Bon profil"
+    || (classification.label !== "Profil faible" && classificationPrediction === 1);
 
   return {
+    historyId: payload.historyId || "",
+    createdAt: payload.createdAt || "",
     fileName: payload.fileName || "CV analyse",
     cvText: payload.cvText || "",
     offerSkills,
@@ -473,29 +470,52 @@ function normalizeAnalysis(payload) {
       found: asArray(sections.found),
       missing: asArray(sections.missing)
     },
+    documentCheck: payload.documentCheck || {
+      isCv: true,
+      score: 100,
+      positiveSignals: [],
+      negativeSignals: []
+    },
     wordCount: toNumber(payload.wordCount),
     healthScore: toNumber(payload.healthScore),
     atsScore: toNumber(payload.atsScore, toNumber(payload.healthScore)),
     atsChecks: asArray(payload.atsChecks).length ? asArray(payload.atsChecks) : buildFallbackAtsChecks(payload),
     keywordCoverage,
     experience: payload.experience || {
-      level: "Non detecte",
+      level: "Non détecté",
       years: 0,
-      evidence: "Aucune duree explicite detectee dans le CV."
+      evidence: "Aucune durée explicite détectée dans le CV."
+    },
+    profileType: {
+      label: profileType.label || "Profil generaliste",
+      score: toNumber(profileType.score),
+      confidence: profileType.confidence || "faible",
+      signals: asArray(profileType.signals),
+      alternatives: asArray(profileType.alternatives)
+    },
+    classification: {
+      label: isPositiveClassification ? "Bon profil" : "Profil faible",
+      score: toNumber(classification.score),
+      tone: isPositiveClassification ? "good" : "bad",
+      detail: classification.detail || "Classification binaire Random Forest.",
+      prediction: classificationPrediction,
+      positiveProbability: toNumber(classification.positiveProbability),
+      negativeProbability: toNumber(classification.negativeProbability),
+      model: classification.model || "RandomForestClassifier"
     },
     interviewQuestions: asArray(payload.interviewQuestions).length
       ? asArray(payload.interviewQuestions)
       : buildFallbackQuestions(matchedSkills, missingSkills),
     rewriteSuggestions: asArray(payload.rewriteSuggestions).length
       ? asArray(payload.rewriteSuggestions)
-      : (actions.length ? actions : ["Ajouter les competences manquantes avec des exemples concrets."]),
+      : (actions.length ? actions : ["Ajouter les compétences manquantes avec des exemples concrets."]),
     verdict: payload.verdict || "Analyse terminee",
     actions,
     prediction: toNumber(payload.prediction),
     probability: asArray(payload.probability),
     aiEngines: payload.aiEngines || {
       semantic: "Moteur de similarite disponible",
-      classifier: payload.probability ? "Modele ML local" : "Non renseigne",
+      classifier: payload.probability ? "Modèle ML local" : "Non renseigné",
       semanticReady: Boolean(payload.semanticScore),
       classifierReady: Boolean(payload.probability)
     },
@@ -523,31 +543,67 @@ function buildFallbackAtsChecks(payload) {
   const cvSkills = asArray(payload.cvSkills);
   return [
     {
-      label: "Coordonnees",
+      label: "Coordonnées",
       status: Object.values(contacts).some(Boolean) ? "ok" : "warn",
-      detail: Object.values(contacts).some(Boolean) ? "Coordonnees detectees." : "Coordonnees non detectees."
+      detail: Object.values(contacts).some(Boolean) ? "Coordonnées détectées." : "Coordonnées non détectées."
     },
     {
-      label: "Sections cles",
+      label: "Sections clés",
       status: foundSections.length >= 4 ? "ok" : "warn",
-      detail: `${foundSections.length} section(s) standard detectee(s).`
+      detail: `${foundSections.length} section(s) standard détectée(s).`
     },
     {
-      label: "Competences",
+      label: "Compétences",
       status: cvSkills.length >= 6 ? "ok" : "warn",
-      detail: `${cvSkills.length} competence(s) reconnue(s).`
+      detail: `${cvSkills.length} compétence(s) reconnue(s).`
     }
   ];
 }
 
+function buildFallbackClassification(payload) {
+  const probability = asArray(payload.probability).map((value) => toNumber(value));
+  if (probability.length >= 2) {
+    const prediction = toNumber(payload.prediction);
+    const positiveProbability = round(probability[1] * 100);
+    const negativeProbability = round(probability[0] * 100);
+    const isPositive = prediction === 1;
+    return {
+      label: isPositive ? "Bon profil" : "Profil faible",
+      score: isPositive ? positiveProbability : negativeProbability,
+      tone: isPositive ? "good" : "bad",
+      detail: `Classification binaire Random Forest (${positiveProbability}% positif / ${negativeProbability}% negatif).`,
+      prediction,
+      positiveProbability,
+      negativeProbability,
+      model: "RandomForestClassifier"
+    };
+  }
+
+  const finalScore = toNumber(payload.finalScore);
+  const threshold = toNumber(payload.threshold, 65);
+  const isPositive = finalScore >= threshold;
+  const positiveProbability = round(finalScore);
+  const negativeProbability = round(100 - finalScore);
+  return {
+    label: isPositive ? "Bon profil" : "Profil faible",
+    score: isPositive ? positiveProbability : negativeProbability,
+    tone: isPositive ? "good" : "bad",
+    detail: "Estimation binaire de secours; relancez l'analyse pour utiliser Random Forest.",
+    prediction: isPositive ? 1 : 0,
+    positiveProbability,
+    negativeProbability,
+    model: "Fallback local"
+  };
+}
+
 function buildFallbackQuestions(matchedSkills, missingSkills) {
   const questions = missingSkills.slice(0, 3).map((skill) => (
-    `Comment le candidat peut-il demontrer ou acquerir rapidement la competence ${skill} ?`
+    `Comment le candidat peut-il démontrer ou acquérir rapidement la compétence ${skill} ?`
   ));
   matchedSkills.slice(0, 2).forEach((skill) => {
     questions.push(`Quel projet concret prouve le niveau du candidat sur ${skill} ?`);
   });
-  return questions.length ? questions : ["Quel resultat mesurable le candidat peut-il livrer pendant les 90 premiers jours ?"];
+  return questions.length ? questions : ["Quel résultat mesurable le candidat peut-il livrer pendant les 90 premiers jours ?"];
 }
 
 function renderAnalysis(analysis) {
@@ -557,8 +613,9 @@ function renderAnalysis(analysis) {
   els.scoreValue.textContent = `${analysis.finalScore}%`;
   els.scoreRing.style.background = `conic-gradient(${ringColor} ${degree}deg, #e5e7eb 0deg)`;
   els.verdictText.textContent = analysis.verdict;
-  els.scoreCopy.textContent = `Score combiné : ${analysis.skillWeight}% compétences et ${100 - analysis.skillWeight}% proximité sémantique.`;
+  els.scoreCopy.textContent = `${analysis.classification.label} - ${analysis.classification.detail}`;
   els.skillScore.textContent = `${analysis.skillScore}%`;
+  renderClassification(analysis.classification);
   els.semanticScore.textContent = `${analysis.semanticScore}%`;
   els.healthScore.textContent = `${analysis.healthScore}%`;
   els.atsScore.textContent = `${analysis.atsScore}%`;
@@ -571,6 +628,7 @@ function renderAnalysis(analysis) {
   renderChips(els.sectionsFound, analysis.sections.found, "good", "Aucune section standard détectée.");
   renderChips(els.sectionsMissing, analysis.sections.missing, "warn", "Toutes les sections principales sont présentes.");
   renderProfile(analysis.experience);
+  renderProfileType(analysis.profileType);
   renderChips(els.keywordMatched, analysis.keywordCoverage.matched, "good", "Aucun mot-clé prioritaire détecté.");
   renderChips(els.keywordMissing, analysis.keywordCoverage.missing, "warn", "Tous les mots-clés prioritaires sont couverts.");
   els.keywordCoverageLabel.textContent = `${analysis.keywordCoverage.score}%`;
@@ -610,6 +668,28 @@ function renderProfile(experience) {
   els.profileLevel.textContent = experience.level;
   els.profileYears.textContent = `${experience.years} an(s)`;
   els.profileEvidence.textContent = experience.evidence;
+}
+
+function renderClassification(classification) {
+  els.classificationLabel.textContent = classification.label;
+  els.classificationDetail.textContent = `${classification.score}% - ${classification.detail}`;
+  els.classificationCard.className = `metric-card classification-card ${classification.tone || "warn"}`;
+}
+
+function renderProfileType(profileType) {
+  const signals = asArray(profileType.signals);
+  const alternatives = asArray(profileType.alternatives);
+  const signalText = signals.length
+    ? `Signaux : ${signals.join(", ")}`
+    : "Aucun signal spécialisé fort détecté.";
+  const alternativeText = alternatives.length
+    ? ` Alternatives : ${alternatives.map((item) => item.label).join(", ")}.`
+    : "";
+
+  els.profileTypeLabel.textContent = profileType.label || "Profil generaliste";
+  els.profileTypeScore.textContent = `${toNumber(profileType.score)}%`;
+  els.profileTypeConfidence.textContent = `Confiance ${profileType.confidence || "faible"}`;
+  els.profileTypeSignals.textContent = `${signalText}${alternativeText}`;
 }
 
 function renderList(container, items, ordered) {
@@ -657,12 +737,40 @@ function buildReportMarkup(analysis) {
 
     <div class="report-summary-grid">
       ${reportMetric("Score final", `${analysis.finalScore}%`)}
+      ${reportMetric("Type document", analysis.documentCheck.isCv ? `CV reconnu (${analysis.documentCheck.score}%)` : "Non CV")}
+      ${reportMetric("Classification", analysis.classification.label)}
+      ${reportMetric("Type profil", analysis.profileType.label)}
       ${reportMetric("Compétences", `${analysis.skillScore}%`)}
       ${reportMetric("Sémantique", `${analysis.semanticScore}%`)}
       ${reportMetric("Santé du CV", `${analysis.healthScore}%`)}
       ${reportMetric("ATS", `${analysis.atsScore}%`)}
       ${reportMetric("Mots-clés", `${analysis.keywordCoverage.score}%`)}
       ${reportMetric("Durée", `${analysis.processingTimeMs} ms`)}
+    </div>
+
+    <div class="report-section">
+      <h3>Controle du document</h3>
+      <ul class="report-actions">
+        <li>Statut : ${analysis.documentCheck.isCv ? "CV accepte" : "Document refuse"} (${analysis.documentCheck.score}%)</li>
+        <li>Signaux : ${escapeHtml(asArray(analysis.documentCheck.positiveSignals).join(", ") || "Aucun signal detaille")}</li>
+      </ul>
+    </div>
+
+    <div class="report-section">
+      <h3>Classification candidat</h3>
+      <ul class="report-actions">
+        <li>Niveau : ${escapeHtml(analysis.classification.label)} (${analysis.classification.score}%)</li>
+        <li>Lecture : ${escapeHtml(analysis.classification.detail)}</li>
+      </ul>
+    </div>
+
+    <div class="report-section">
+      <h3>Type de profil détecté</h3>
+      <ul class="report-actions">
+        <li>Orientation : ${escapeHtml(analysis.profileType.label)} (${analysis.profileType.score}% de confiance)</li>
+        <li>Confiance : ${escapeHtml(analysis.profileType.confidence)}</li>
+        <li>Signaux : ${escapeHtml(analysis.profileType.signals.join(", ") || "Aucun signal spécialisé fort détecté")}</li>
+      </ul>
     </div>
 
     <div class="report-section">
@@ -728,6 +836,9 @@ function buildMarkdownReport(analysis) {
 Verdict : ${analysis.verdict}
 Fichier : ${analysis.fileName}
 Seuil shortlist : ${analysis.threshold}%
+Controle document : ${analysis.documentCheck.isCv ? "CV reconnu" : "Non CV"} (${analysis.documentCheck.score}%)
+Classification : ${analysis.classification.label} (${analysis.classification.score}%)
+Type de profil : ${analysis.profileType.label} (${analysis.profileType.confidence}, ${analysis.profileType.score}%)
 
 ## Scores
 - Score final : ${analysis.finalScore}%
@@ -744,6 +855,8 @@ Correspondances : ${analysis.matchedSkills.join(", ") || "Aucune"}
 Manquantes : ${analysis.missingSkills.join(", ") || "Aucune"}
 
 ## Diagnostic
+Type détecté : ${analysis.profileType.label}
+Signaux profil : ${analysis.profileType.signals.join(", ") || "Aucun"}
 Sections présentes : ${analysis.sections.found.join(", ") || "Aucune"}
 Sections à renforcer : ${analysis.sections.missing.join(", ") || "Aucune"}
 Niveau estimé : ${analysis.experience.level} (${analysis.experience.years} an(s))
@@ -786,7 +899,7 @@ function buildHtmlDocument(analysis) {
     .report-metric strong { display: block; margin-top: 8px; font-size: 24px; }
     .report-tag-grid { display: flex; flex-wrap: wrap; gap: 8px; }
     .report-tag { padding: 7px 10px; border-radius: 999px; background: #f8fafc; border: 1px solid #e8edf3; }
-    .report-tag.good { color: #12805c; background: rgba(18, 128, 92, .1); }
+    .report-tag.good { color: #c9501f; background: rgba(242, 111, 47, .1); }
     .report-tag.warn { color: #a15c07; background: rgba(161, 92, 7, .1); }
   </style>
 </head>
@@ -814,6 +927,18 @@ function setStatus(message, tone) {
 function setRagStatus(message, tone) {
   els.ragStatus.textContent = message;
   els.ragStatus.className = `status ${tone || ""}`;
+}
+
+function setRagMode(message) {
+  if (els.ragMode) {
+    els.ragMode.textContent = message;
+  }
+}
+
+function formatEmbeddingEngine(embedding) {
+  if (!embedding) return "Moteur : local.";
+  if (embedding.neural) return "Moteur : MiniLM multilingue.";
+  return "Moteur : fallback local.";
 }
 
 async function readJson(response) {
@@ -862,4 +987,5 @@ function formatBytes(bytes) {
   return `${(bytes / 1024 ** index).toFixed(index ? 1 : 0)} ${units[index]}`;
 }
 
+renderRagSuggestions(DEFAULT_RAG_SUGGESTIONS);
 loadRagLibrary();

@@ -13,6 +13,8 @@ def generate_report(result, semantic_score, final_score, insights=None):
     contacts = insights.get("contacts", {})
     sections_found = insights.get("sections_found", [])
     sections_missing = insights.get("sections_missing", [])
+    document_check = insights.get("document_check", {})
+    classification = insights.get("classification", {})
     actions = insights.get("actions", [])
 
     if final_score >= threshold:
@@ -22,9 +24,9 @@ def generate_report(result, semantic_score, final_score, insights=None):
     else:
         recommendation = "Profil peu aligne avec les criteres principaux de l'offre."
 
-    action_lines = "\n".join(f"- {item}" for item in actions) if actions else "- Aucun plan d'action genere."
+    action_lines = "\n".join(f"- {item}" for item in actions) if actions else "- Aucun plan d'action généré."
     contact_lines = "\n".join(
-        f"- {label} : {value if value else 'Non detecte'}"
+        f"- {label} : {value if value else 'Non détecté'}"
         for label, value in contacts.items()
     )
 
@@ -32,27 +34,30 @@ def generate_report(result, semantic_score, final_score, insights=None):
 
 ## Decision
 Verdict : {verdict}
+Controle document : {"CV reconnu" if document_check.get("isCv", True) else "Document refuse"} ({document_check.get("score", 100)}%)
+Classification binaire Random Forest : {classification.get("label", "Non calculee")} ({classification.get("score", 0)}%)
+Modèle classification : {classification.get("model", "Non renseigné")}
 Recommendation : {recommendation}
 Seuil shortlist : {threshold}%
 
 ## Scores
-- Score competences : {result["score"]}%
+- Score compétences : {result["score"]}%
 - Score semantique : {semantic_score}%
 - Score final : {final_score}%
-- Sante du CV : {cv_health}%
-- Ponderation : {skill_weight}% competences / {semantic_weight}% semantique
+- Santé du CV : {cv_health}%
+- Pondération : {skill_weight}% compétences / {semantic_weight}% sémantique
 
-## Competences
-Competences correspondantes : {_join_or_none(result["matched_skills"])}
-Competences manquantes : {_join_or_none(result["missing_skills"])}
+## Compétences
+Compétences correspondantes : {_join_or_none(result["matched_skills"])}
+Compétences manquantes : {_join_or_none(result["missing_skills"])}
 
 ## Diagnostic du CV
-- Nombre de mots detectes : {word_count}
-- Sections presentes : {_join_or_none(sections_found)}
-- Sections a renforcer : {_join_or_none(sections_missing)}
+- Nombre de mots détectés : {word_count}
+- Sections présentes : {_join_or_none(sections_found)}
+- Sections à renforcer : {_join_or_none(sections_missing)}
 
-## Coordonnees detectees
-{contact_lines if contact_lines else "- Aucune coordonnee detectee"}
+## Coordonnées détectées
+{contact_lines if contact_lines else "- Aucune coordonnée détectée"}
 
 ## Plan d'action
 {action_lines}
