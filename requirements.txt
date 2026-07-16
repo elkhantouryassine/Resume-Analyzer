@@ -1,4 +1,1 @@
 pymupdf
-sentence-transformers
-joblib
-scikit-learn

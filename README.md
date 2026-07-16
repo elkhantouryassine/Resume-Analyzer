@@ -10,6 +10,12 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
+Pour une installation locale avec les moteurs IA lourds optionnels :
+
+```powershell
+pip install -r requirements-ai.txt
+```
+
 Si `python` n'est pas reconnu sous Windows, essayez :
 
 ```powershell
@@ -32,6 +38,10 @@ Les fichiers uploadés, rapports générés et index vectoriels sont créés loc
 
 ## RAG et embeddings
 
-Le chatbot RAG utilise `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` quand `sentence-transformers` est installé. Si le modèle n'est pas disponible, l'application bascule automatiquement sur un fallback local par hashing pour rester utilisable.
+Le chatbot RAG utilise `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` quand `sentence-transformers` est installé via `requirements-ai.txt`. En deploiement, `requirements.txt` reste volontairement leger pour eviter de depasser la limite de taille des fonctions serverless. Si le modele n'est pas disponible, l'application bascule automatiquement sur un fallback local par hashing pour rester utilisable.
+
+## Deploiement
+
+Le fichier `.vercelignore` exclut l'environnement virtuel, les caches et les donnees locales afin de garder le bundle sous la limite de taille. Sur Vercel, les fichiers generes sont stockes temporairement dans `/tmp/architeo_recruit`. Pour forcer un autre dossier runtime, definir `ARCHITEO_DATA_DIR`.
 
 L'assistant RH peut aussi générer une shortlist, comparer les meilleurs candidats, résumer les profils et vérifier les compétences manquantes dans les CV indexés.

@@ -1,8 +1,10 @@
 import hashlib
 import json
 import math
+import os
 import re
 import sqlite3
+import tempfile
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
@@ -17,7 +19,18 @@ except Exception:
 
 
 BASE_DIR = Path(__file__).resolve().parents[1]
-VECTOR_DIR = BASE_DIR / "data" / "vector_db"
+
+
+def runtime_data_dir():
+    configured_dir = os.environ.get("ARCHITEO_DATA_DIR")
+    if configured_dir:
+        return Path(configured_dir)
+    if os.environ.get("VERCEL"):
+        return Path(tempfile.gettempdir()) / "architeo_recruit"
+    return BASE_DIR / "data"
+
+
+VECTOR_DIR = runtime_data_dir() / "vector_db"
 DB_PATH = VECTOR_DIR / "rag_vectors.sqlite"
 HASH_VECTOR_DIM = 512
 HASH_ENGINE = "hashing-v1"

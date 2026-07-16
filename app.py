@@ -38,8 +38,18 @@ prefer_local_site_packages()
 
 
 
-UPLOAD_DIR = BASE_DIR / "data" / "cvs"
-HISTORY_DIR = BASE_DIR / "data" / "history"
+def runtime_data_dir():
+    configured_dir = os.environ.get("ARCHITEO_DATA_DIR")
+    if configured_dir:
+        return Path(configured_dir)
+    if os.environ.get("VERCEL"):
+        return Path(tempfile.gettempdir()) / "architeo_recruit"
+    return BASE_DIR / "data"
+
+
+RUNTIME_DATA_DIR = runtime_data_dir()
+UPLOAD_DIR = RUNTIME_DATA_DIR / "cvs"
+HISTORY_DIR = RUNTIME_DATA_DIR / "history"
 HISTORY_DB = HISTORY_DIR / "analysis_history.sqlite"
 
 TRACKING_STAGES = [
