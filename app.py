@@ -154,9 +154,24 @@ NON_CV_DOCUMENT_TERMS = [
     "compte rendu", "rapport annuel", "article scientifique", "abstract",
     "chapitre", "table des matieres", "sommaire", "bibliographie",
     "recu", "receipt", "attestation", "certificat medical", "syllabus",
+    "powerpoint", "presentation powerpoint", "support de presentation",
+    "diapositive", "diapositives", "slide", "slides", "support de cours",
+    "cours magistral", "plan du cours", "objectifs du cours",
+    "objectif pedagogique", "objectifs pedagogiques", "travaux diriges",
+    "travaux pratiques", "exercice", "exercices", "corrige", "corriges",
+    "controle continu", "examen final", "module", "enseignant",
+    "professeur", "semestre", "seance", "support pedagogique",
 ]
 
-MIN_CV_DOCUMENT_SCORE = 45
+STRICT_NON_CV_DOCUMENT_TERMS = [
+    "powerpoint", "presentation powerpoint", "support de presentation",
+    "diapositive", "diapositives", "slide", "slides", "support de cours",
+    "cours magistral", "plan du cours", "objectifs du cours",
+    "objectif pedagogique", "objectifs pedagogiques", "travaux diriges",
+    "travaux pratiques", "support pedagogique", "syllabus",
+]
+
+MIN_CV_DOCUMENT_SCORE = 68
 
 
 def extract_contact_details(text):
@@ -250,6 +265,8 @@ def has_normalized_phrase(normalized_text, phrase):
 
 def evaluate_cv_document(text, filename="", cv_skills=None, contacts=None, sections_found=None):
     normalized_text = normalize_profile_text(text)
+    normalized_filename = normalize_profile_text(filename)
+    combined_text = f"{normalized_filename} {normalized_text}".strip()
     words = re.findall(r"\b[a-z0-9+#.]{2,}\b", normalized_text)
     word_count = len(words)
     contacts = contacts if contacts is not None else extract_contact_details(text)
@@ -287,12 +304,11 @@ def evaluate_cv_document(text, filename="", cv_skills=None, contacts=None, secti
 
     professional_hits = [
         term for term in CV_DOCUMENT_TERMS
-        if has_normalized_phrase(normalized_text, term)
+        if has_normalized_phrase(combined_text, term)
     ]
     score += min(len(professional_hits) * 3, 18)
     positive_signals.extend(professional_hits[:5])
 
-    normalized_filename = normalize_profile_text(filename)
     filename_denies_cv = re.search(r"\b(non|not|pas)\s+cv\b", normalized_filename)
     if re.search(r"\b(cv|resume|curriculum)\b", normalized_filename) and not filename_denies_cv:
         score += 8
@@ -300,20 +316,58 @@ def evaluate_cv_document(text, filename="", cv_skills=None, contacts=None, secti
 
     negative_signals = [
         term for term in NON_CV_DOCUMENT_TERMS
-        if has_normalized_phrase(normalized_text, term)
+        if has_normalized_phrase(combined_text, term)
+    ]
+    strict_negative_signals = [
+        term for term in STRICT_NON_CV_DOCUMENT_TERMS
+        if has_normalized_phrase(combined_text, term)
     ]
     score -= min(len(negative_signals) * 12, 36)
+    score -= min(len(strict_negative_signals) * 18, 45)
 
     if word_count < 35:
         score -= 18
     if not sections_found and contact_count == 0 and skill_count < 2:
         score -= 20
 
+    has_experience_signal = bool(re.search(r"\b(experience|experiences|work history|emploi|mission|missions|stage|stages)\b", normalized_text))
+    has_education_signal = bool(re.search(r"\b(formation|education|diplome|degree|universite|ecole|master|licence|bachelor)\b", normalized_text))
+    has_skills_signal = bool(re.search(r"\b(competence|competences|skills|technologies|outils|langages|languages)\b", normalized_text)) or skill_count >= 4
+    has_contact_signal = contact_count > 0
+    has_cv_title_signal = bool(re.search(r"\b(curriculum vitae|resume|cv)\b", combined_text))
+    core_section_count = sum([has_experience_signal, has_education_signal, has_skills_signal])
+    strict_requirements = {
+        "contact": has_contact_signal,
+        "experienceOrEducation": has_experience_signal or has_education_signal,
+        "skills": has_skills_signal,
+        "cvStructure": core_section_count >= 2,
+        "minimumLength": word_count >= 80,
+    }
+    missing_requirements = [
+        label for label, passed in {
+            "coordonnees visibles": strict_requirements["contact"],
+            "experience ou formation": strict_requirements["experienceOrEducation"],
+            "competences": strict_requirements["skills"],
+            "structure CV": strict_requirements["cvStructure"],
+            "contenu suffisant": strict_requirements["minimumLength"],
+        }.items()
+        if not passed
+    ]
+
+    strong_non_cv_context = bool(strict_negative_signals)
+    if len(negative_signals) >= 3:
+        strong_non_cv_context = True
+    if strict_negative_signals:
+        score = min(score, 42)
+
     score = round(max(0, min(score, 100)), 2)
-    has_cv_structure = contact_count > 0 or len(sections_found) >= 2 or skill_count >= 3
-    is_cv = score >= MIN_CV_DOCUMENT_SCORE and has_cv_structure
-    if len(negative_signals) >= 3 and score < 70:
-        is_cv = False
+    passes_strict_cv_rules = all(strict_requirements.values()) or (
+        has_cv_title_signal
+        and has_contact_signal
+        and core_section_count >= 2
+        and skill_count >= 3
+    )
+    is_cv = score >= MIN_CV_DOCUMENT_SCORE and passes_strict_cv_rules and not strong_non_cv_context
 
     return {
         "isCv": is_cv,
@@ -325,12 +379,37 @@ def evaluate_cv_document(text, filename="", cv_skills=None, contacts=None, secti
         "skillCount": skill_count,
         "positiveSignals": unique_limited(positive_signals, 8),
         "negativeSignals": unique_limited(negative_signals, 6),
+        "strictNegativeSignals": unique_limited(strict_negative_signals, 6),
+        "strictRequirements": strict_requirements,
+        "missingRequirements": missing_requirements,
+        "documentTypeBlocked": strong_non_cv_context,
     }
 
 
 def build_cv_rejection_message(document_check):
     signals = document_check.get("positiveSignals", [])
     signal_text = ", ".join(signals[:3]) if signals else "signaux CV insuffisants"
+    negative_signals = document_check.get("strictNegativeSignals") or document_check.get("negativeSignals", [])
+    missing = document_check.get("missingRequirements", [])
+    negative_text = ", ".join(negative_signals[:3])
+    missing_text = ", ".join(missing[:4])
+    details = []
+    if negative_text:
+        details.append(f"signaux non-CV detectes : {negative_text}")
+    if missing_text:
+        details.append(f"elements CV manquants : {missing_text}")
+    details.append(f"signaux CV detectes : {signal_text}")
+    return (
+        "Document refuse : seuls les CV sont acceptes. "
+        "Les presentations PowerPoint, supports de cours, rapports, attestations "
+        "et documents generiques sont bloques. "
+        "Le fichier importe ne ressemble pas assez a un CV "
+        f"(confiance {document_check.get('score', 0)}%). "
+        "Importez un CV contenant des coordonnees visibles, une experience ou formation "
+        "et des competences. "
+        + " ; ".join(details)
+        + "."
+    )
     return (
         "Document refuse : le fichier importe ne semble pas etre un CV "
         f"(confiance {document_check.get('score', 0)}%). "
@@ -1138,6 +1217,9 @@ class ResumeAnalyzerHandler(BaseHTTPRequestHandler):
         if path == "/history.js":
             self.send_static_file(BASE_DIR / "history.js", "application/javascript; charset=utf-8")
             return
+        if path == "/theme-toggle.js":
+            self.send_static_file(BASE_DIR / "theme-toggle.js", "application/javascript; charset=utf-8")
+            return
         if path == "/tracking.js":
             self.send_static_file(BASE_DIR / "tracking.js", "application/javascript; charset=utf-8")
             return
@@ -1384,6 +1466,317 @@ class ResumeAnalyzerHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format, *args):
         print(f"{self.address_string()} - {format % args}")
+
+
+def wsgi_status_line(status):
+    status_code = int(status)
+    try:
+        phrase = HTTPStatus(status_code).phrase
+    except ValueError:
+        phrase = "OK"
+    return f"{status_code} {phrase}"
+
+
+def wsgi_send(start_response, content, status=HTTPStatus.OK, content_type="text/plain; charset=utf-8", headers=None):
+    body = content.encode("utf-8") if isinstance(content, str) else content
+    response_headers = [
+        ("Content-Type", content_type),
+        ("Content-Length", str(len(body))),
+        ("Cache-Control", "no-store"),
+    ]
+    if headers:
+        response_headers.extend(headers)
+    start_response(wsgi_status_line(status), response_headers)
+    return [body]
+
+
+def wsgi_json(start_response, payload, status=HTTPStatus.OK):
+    content = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    return wsgi_send(start_response, content, status, "application/json; charset=utf-8")
+
+
+def wsgi_static(start_response, file_path, content_type):
+    if not file_path.exists():
+        return wsgi_json(start_response, {"error": "Not found"}, HTTPStatus.NOT_FOUND)
+    return wsgi_send(start_response, file_path.read_bytes(), HTTPStatus.OK, content_type)
+
+
+def wsgi_redirect(start_response, location):
+    return wsgi_send(
+        start_response,
+        b"",
+        HTTPStatus.FOUND,
+        "text/plain; charset=utf-8",
+        [("Location", location)],
+    )
+
+
+def wsgi_headers(environ):
+    headers = {}
+    if environ.get("CONTENT_TYPE"):
+        headers["Content-Type"] = environ["CONTENT_TYPE"]
+    if environ.get("CONTENT_LENGTH"):
+        headers["Content-Length"] = environ["CONTENT_LENGTH"]
+    return headers
+
+
+def wsgi_body(environ):
+    content_length = parse_int(environ.get("CONTENT_LENGTH"), 0)
+    if content_length <= 0:
+        return content_length, b""
+    return content_length, environ["wsgi.input"].read(content_length)
+
+
+class ResumeAnalyzerWSGIApp:
+    def __call__(self, environ, start_response):
+        method = environ.get("REQUEST_METHOD", "GET").upper()
+        path = unquote(environ.get("PATH_INFO") or "/")
+        query = parse_qs(environ.get("QUERY_STRING", ""))
+
+        try:
+            if method == "GET":
+                return self.handle_get(path, query, start_response)
+            if method == "POST":
+                return self.handle_post(path, environ, start_response)
+            return wsgi_json(start_response, {"error": "Method not allowed"}, HTTPStatus.METHOD_NOT_ALLOWED)
+        except Exception as exc:
+            return wsgi_json(start_response, {"error": f"Erreur serveur : {exc}"}, HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def handle_get(self, path, query, start_response):
+        if path == "/api/history":
+            return wsgi_json(start_response, {"items": list_analysis_history()})
+        if path == "/api/tracking":
+            return wsgi_json(start_response, list_candidate_tracking())
+        if path == "/api/analysis/latest":
+            return wsgi_json(start_response, {"analysis": get_latest_analysis()})
+        if path == "/api/rag/cvs":
+            return wsgi_json(start_response, list_indexed_cvs())
+        if path in {"/", "/index.html"}:
+            return wsgi_static(start_response, BASE_DIR / "index.html", "text/html; charset=utf-8")
+        if path in {"/app", "/app.html"}:
+            if query.get("start", ["0"])[0] != "1":
+                return wsgi_redirect(start_response, "/")
+            return wsgi_static(start_response, BASE_DIR / "app.html", "text/html; charset=utf-8")
+        if path in {"/history", "/history.html"}:
+            return wsgi_static(start_response, BASE_DIR / "history.html", "text/html; charset=utf-8")
+        if path in {"/tracking", "/tracking.html"}:
+            return wsgi_static(start_response, BASE_DIR / "tracking.html", "text/html; charset=utf-8")
+        if path in {"/skills", "/skills.html"}:
+            return wsgi_static(start_response, BASE_DIR / "skills.html", "text/html; charset=utf-8")
+        if path in {"/insights", "/insights.html"}:
+            return wsgi_static(start_response, BASE_DIR / "insights.html", "text/html; charset=utf-8")
+        if path in {"/diagnostic", "/diagnostic.html"}:
+            return wsgi_static(start_response, BASE_DIR / "diagnostic.html", "text/html; charset=utf-8")
+        if path in {"/report", "/report.html"}:
+            return wsgi_static(start_response, BASE_DIR / "report.html", "text/html; charset=utf-8")
+        if path == "/styles.css":
+            return wsgi_static(start_response, BASE_DIR / "styles.css", "text/css; charset=utf-8")
+        if path == "/script.js":
+            return wsgi_static(start_response, BASE_DIR / "script.js", "application/javascript; charset=utf-8")
+        if path == "/history.js":
+            return wsgi_static(start_response, BASE_DIR / "history.js", "application/javascript; charset=utf-8")
+        if path == "/theme-toggle.js":
+            return wsgi_static(start_response, BASE_DIR / "theme-toggle.js", "application/javascript; charset=utf-8")
+        if path == "/tracking.js":
+            return wsgi_static(start_response, BASE_DIR / "tracking.js", "application/javascript; charset=utf-8")
+        if path == "/analysis-pages.js":
+            return wsgi_static(start_response, BASE_DIR / "analysis-pages.js", "application/javascript; charset=utf-8")
+        if path == "/rag-widget.js":
+            return wsgi_static(start_response, BASE_DIR / "rag-widget.js", "application/javascript; charset=utf-8")
+        if path.startswith("/assets/"):
+            asset_path = (BASE_DIR / path.lstrip("/")).resolve()
+            assets_root = (BASE_DIR / "assets").resolve()
+            asset_types = {
+                ".svg": "image/svg+xml; charset=utf-8",
+                ".jpg": "image/jpeg",
+                ".jpeg": "image/jpeg",
+                ".png": "image/png",
+                ".webp": "image/webp",
+            }
+            content_type = asset_types.get(asset_path.suffix.lower())
+            if assets_root in asset_path.parents and content_type:
+                return wsgi_static(start_response, asset_path, content_type)
+        return wsgi_json(start_response, {"error": "Not found"}, HTTPStatus.NOT_FOUND)
+
+    def handle_post(self, path, environ, start_response):
+        if path == "/api/analyze":
+            return self.handle_analyze(environ, start_response)
+        if path == "/api/rag/upload":
+            return self.handle_rag_upload(environ, start_response)
+        if path == "/api/rag/chat":
+            return self.handle_rag_chat(environ, start_response)
+        if path == "/api/tracking":
+            return self.handle_tracking_update(environ, start_response)
+        return wsgi_json(start_response, {"error": "Not found"}, HTTPStatus.NOT_FOUND)
+
+    def handle_analyze(self, environ, start_response):
+        content_length, body = wsgi_body(environ)
+        if content_length <= 0:
+            return wsgi_json(start_response, {"error": "Requete vide."}, HTTPStatus.BAD_REQUEST)
+
+        temp_path = None
+        try:
+            fields, files = parse_multipart_form(wsgi_headers(environ), body)
+            offer_text = fields.get("offer_text", "").strip()
+            if not offer_text:
+                return wsgi_json(start_response, {"error": "Veuillez coller une offre d'emploi."}, HTTPStatus.BAD_REQUEST)
+
+            uploaded_items = collect_uploaded_files(files, "cv_file")
+            uploaded = uploaded_items[0] if uploaded_items else None
+            if not uploaded or not uploaded["filename"]:
+                return wsgi_json(start_response, {"error": "Veuillez importer un CV PDF, DOCX ou TXT."}, HTTPStatus.BAD_REQUEST)
+
+            skill_weight = parse_int(fields.get("skill_weight"), 60)
+            threshold = parse_int(fields.get("threshold"), 70)
+            original_name = secure_filename(uploaded["filename"])
+            extension = Path(original_name).suffix.lower()
+            if extension not in ALLOWED_EXTENSIONS:
+                return wsgi_json(start_response, {"error": "Format non supporte. Utilisez PDF, DOCX ou TXT."}, HTTPStatus.BAD_REQUEST)
+
+            UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(delete=False, suffix=extension, dir=UPLOAD_DIR) as temp_file:
+                temp_path = Path(temp_file.name)
+                temp_file.write(uploaded["content"])
+
+            try:
+                analysis = analyze_resume(offer_text, temp_path, original_name, skill_weight, threshold)
+            except ValueError as validation_exc:
+                return wsgi_json(start_response, {"error": str(validation_exc)}, HTTPStatus.BAD_REQUEST)
+
+            try:
+                indexed_cv = add_cv_to_vector_db(analysis["cvText"], original_name)
+                analysis["ragIndex"] = {
+                    "indexed": True,
+                    "item": indexed_cv,
+                    "library": list_indexed_cvs(),
+                }
+            except Exception as rag_exc:
+                analysis["ragIndex"] = {
+                    "indexed": False,
+                    "error": str(rag_exc),
+                    "library": list_indexed_cvs(),
+                }
+            try:
+                save_analysis_history(analysis)
+            except Exception as history_exc:
+                analysis["historyError"] = str(history_exc)
+            return wsgi_json(start_response, analysis)
+        except Exception as exc:
+            return wsgi_json(start_response, {"error": f"Analyse impossible : {exc}"}, HTTPStatus.INTERNAL_SERVER_ERROR)
+        finally:
+            if temp_path is not None:
+                try:
+                    temp_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+    def handle_rag_upload(self, environ, start_response):
+        content_length, body = wsgi_body(environ)
+        if content_length <= 0:
+            return wsgi_json(start_response, {"error": "Requete vide."}, HTTPStatus.BAD_REQUEST)
+
+        try:
+            _, files = parse_multipart_form(wsgi_headers(environ), body)
+            uploaded_files = collect_uploaded_files(files, "cv_files", "cv_files[]", "rag_files", "cv_file")
+            if not uploaded_files:
+                return wsgi_json(start_response, {"error": "Importez au moins un CV PDF, DOCX ou TXT."}, HTTPStatus.BAD_REQUEST)
+
+            indexed = []
+            errors = []
+            UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+            for uploaded in uploaded_files:
+                temp_path = None
+                original_name = secure_filename(uploaded["filename"])
+                extension = Path(original_name).suffix.lower()
+                if extension not in ALLOWED_EXTENSIONS:
+                    errors.append({"filename": original_name, "error": "Format non supporte."})
+                    continue
+
+                try:
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=extension, dir=UPLOAD_DIR) as temp_file:
+                        temp_path = Path(temp_file.name)
+                        temp_file.write(uploaded["content"])
+
+                    cv_text = extract_text(temp_path)
+                    document_check = evaluate_cv_document(cv_text, original_name)
+                    if not document_check["isCv"]:
+                        errors.append(
+                            {
+                                "filename": original_name,
+                                "error": build_cv_rejection_message(document_check),
+                                "documentCheck": document_check,
+                            }
+                        )
+                        continue
+                    indexed.append(add_cv_to_vector_db(cv_text, original_name))
+                except Exception as exc:
+                    errors.append({"filename": original_name, "error": str(exc)})
+                finally:
+                    if temp_path is not None:
+                        try:
+                            temp_path.unlink(missing_ok=True)
+                        except OSError:
+                            pass
+
+            return wsgi_json(
+                start_response,
+                {
+                    "indexed": indexed,
+                    "errors": errors,
+                    "library": list_indexed_cvs(),
+                },
+                HTTPStatus.OK if indexed else HTTPStatus.BAD_REQUEST,
+            )
+        except Exception as exc:
+            return wsgi_json(start_response, {"error": f"Indexation RAG impossible : {exc}"}, HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def handle_rag_chat(self, environ, start_response):
+        content_length, body = wsgi_body(environ)
+        if content_length <= 0:
+            return wsgi_json(start_response, {"error": "Question vide."}, HTTPStatus.BAD_REQUEST)
+
+        try:
+            payload = json.loads(body.decode("utf-8"))
+            question = payload.get("question", "").strip()
+            top_k = parse_int(payload.get("topK"), 5)
+            if not question:
+                return wsgi_json(start_response, {"error": "Posez une question au chatbot."}, HTTPStatus.BAD_REQUEST)
+
+            return wsgi_json(start_response, generate_chatbot_answer(question, top_k=top_k))
+        except json.JSONDecodeError:
+            return wsgi_json(start_response, {"error": "JSON invalide."}, HTTPStatus.BAD_REQUEST)
+        except Exception as exc:
+            return wsgi_json(start_response, {"error": f"Chatbot RAG indisponible : {exc}"}, HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def handle_tracking_update(self, environ, start_response):
+        content_length, body = wsgi_body(environ)
+        if content_length <= 0:
+            return wsgi_json(start_response, {"error": "Requete vide."}, HTTPStatus.BAD_REQUEST)
+
+        try:
+            payload = json.loads(body.decode("utf-8"))
+            analysis_id = payload.get("analysisId") or payload.get("id")
+            stage = str(payload.get("stage", "")).strip().lower()
+            notes = str(payload.get("notes", "")).strip()
+
+            if stage not in TRACKING_STAGE_IDS:
+                return wsgi_json(start_response, {"error": "Etape de suivi invalide."}, HTTPStatus.BAD_REQUEST)
+
+            tracking = update_candidate_tracking(analysis_id, stage, notes)
+            if tracking is None:
+                return wsgi_json(start_response, {"error": "Analyse introuvable."}, HTTPStatus.NOT_FOUND)
+
+            return wsgi_json(start_response, tracking)
+        except json.JSONDecodeError:
+            return wsgi_json(start_response, {"error": "JSON invalide."}, HTTPStatus.BAD_REQUEST)
+        except Exception as exc:
+            return wsgi_json(start_response, {"error": f"Suivi indisponible : {exc}"}, HTTPStatus.INTERNAL_SERVER_ERROR)
+
+
+app = ResumeAnalyzerWSGIApp()
+application = app
+handler = app
 
 
 def run_server():

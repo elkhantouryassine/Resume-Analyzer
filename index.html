@@ -8,20 +8,28 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700;9..144,900&family=IBM+Plex+Mono:wght@500;600;700&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="icon" href="/assets/tab-logo.jpeg" type="image/jpeg">
-  <link rel="stylesheet" href="styles.css?v=dark-rag-1">
+  <script src="theme-toggle.js?v=theme-1"></script>
+  <link rel="stylesheet" href="styles.css?v=home-pro-1">
   <script src="rag-widget.js?v=dark-rag-1" defer></script>
 </head>
 <body class="home-body">
   <main class="welcome-screen welcome-page" aria-label="Page d'accueil">
     <div class="welcome-topline">
-      
-      <a class="welcome-history-link" href="/history">Historique</a>
+      <a class="welcome-brand" href="/" aria-label="Architeo Recruit">
+        <img class="brand-logo" src="/assets/architeo-recruite-logo.png" alt="" aria-hidden="true">
+        <span>Architeo <strong>Recruit</strong></span>
+      </a>
+      <div class="welcome-top-actions" aria-label="Accès rapides">
+        <a class="welcome-history-link" href="/app?start=1">Analyse</a>
+        <a class="welcome-history-link" href="/tracking">Suivi</a>
+        <a class="welcome-history-link" href="/history">Historique</a>
+      </div>
     </div>
 
     <div class="welcome-visual" aria-hidden="true">
-      <div class="welcome-panel panel-a"></div>
-      <div class="welcome-panel panel-b"></div>
-      <div class="welcome-panel panel-c"></div>
+      <div class="visual-ribbon ribbon-a"></div>
+      <div class="visual-ribbon ribbon-b"></div>
+      <div class="visual-grid-slab"></div>
     </div>
 
     <section class="welcome-layout">
@@ -42,31 +50,24 @@
         </div>
       </div>
 
-      <aside class="welcome-dashboard" aria-label="Aperçu du tableau de bord">
-        <div class="dashboard-head">
-          <span>Score global</span>
-          <strong>86%</strong>
-        </div>
-        <div class="dashboard-bars">
-          <span style="--bar: 92%"></span>
-          <span style="--bar: 78%"></span>
-          <span style="--bar: 64%"></span>
-        </div>
-        <div class="dashboard-card-row">
-          <div>
-            <span>Type profil</span>
-            <strong>Data Analyst</strong>
+      <aside class="welcome-showcase" aria-label="Scène créative de recrutement">
+        <div class="showcase-folder">
+          <span class="folder-tab">Dossier candidat</span>
+          <div class="showcase-paper paper-main">
+            <span>CV</span>
+            <strong>Profil à explorer</strong>
+            <p>Compétences, expériences et potentiel réunis dans un dossier clair.</p>
           </div>
-          <div>
-            <span>ATS</span>
-            <strong>80%</strong>
-          </div>
+          <div class="showcase-paper paper-back"></div>
         </div>
-        <div class="dashboard-tags">
-          <span>Python</span>
-          <span>SQL</span>
-          <span>Power BI</span>
-          <span>Reporting</span>
+        <div class="showcase-lens" aria-hidden="true"></div>
+        <div class="showcase-note note-rh">Entretien RH</div>
+        <div class="showcase-note note-tech">Entretien technique</div>
+        <div class="showcase-note note-next">Suite du recrutement</div>
+        <div class="showcase-tags" aria-hidden="true">
+          <span>Shortlist</span>
+          <span>Rapport</span>
+          <span>Suivi</span>
         </div>
       </aside>
     </section>
