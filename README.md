@@ -1,3 +1,7 @@
+
+
+Uploading Faites ressortir votre candidature dès le premier tri.mp4…
+
 # Architeo Recruit
 
 Application Python native avec interface HTML/CSS/JavaScript pour analyser un CV, générer un rapport et interroger plusieurs CV avec un chatbot RAG local.
